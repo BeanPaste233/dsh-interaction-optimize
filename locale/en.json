@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Interaction Optimize",
+    "description": "Shows this turn's code diff above the composer, a completion toast with a reply excerpt and a built-in or custom sound, select-text annotations, and a right-click file menu (open, reveal, open with another app)."
+  }
+}

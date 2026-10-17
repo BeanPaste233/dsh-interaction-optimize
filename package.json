@@ -1,0 +1,45 @@
+{
+  "name": "dsh-interaction-optimize",
+  "version": "2.0.0",
+  "description": "DSH interaction polish: diff badge above the composer, completion toast with reply excerpt and custom sound, select-text annotations with a \"N comments\" pill, and a right-click file menu (open, reveal, open with another app).",
+  "type": "module",
+  "icon": "icon.svg",
+  "license": "MIT",
+  "author": "Bean_Paste",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "codex",
+    "diff",
+    "notification",
+    "annotation"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
