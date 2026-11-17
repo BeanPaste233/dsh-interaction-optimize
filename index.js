@@ -27,6 +27,9 @@ const execFileAsync = promisify(execFile);
 const ROUTE_PREFIX = '/dsh-interaction-optimize';
 const SOUND_PATH = `${ROUTE_PREFIX}/sound`;
 const CHANGES_PATH = `${ROUTE_PREFIX}/changes`;
+const LIVE_DIFF_PATH = `${ROUTE_PREFIX}/live-diff`;
+/** Finished turns of every Session, drained by the browser half. */
+const COMPLETIONS_PATH = `${ROUTE_PREFIX}/completions`;
 const OPEN_PATH = `${ROUTE_PREFIX}/open`;
 const APPS_PATH = `${ROUTE_PREFIX}/apps`;
 const STORE_DIR_NAME = 'dsh-interaction-optimize';
@@ -36,6 +39,14 @@ const META_FILE = 'sound.json';
 const MAX_SOUND_BYTES = 4 * 1024 * 1024;
 const MAX_TRACKED_SESSIONS = 64;
 const MAX_FILES_IN_RESPONSE = 30;
+const MAX_COMPLETIONS = 50;
+/** The `turn/end` reasons worth a notice, in the Client's tone names. */
+const COMPLETION_TONES = { completed: 'success', error: 'error', 'max-tokens': 'warning' };
+/** Live summaries are computed from git up to four times a second at most. */
+const LIVE_CACHE_MS = 450;
+const MAX_LIVE_FILES = 60;
+const MAX_LIVE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_DIFF_BYTES = 200 * 1024;
 
 /** Accepted upload media types and the extension each is stored under. */
 const EXT_BY_TYPE = {
@@ -238,8 +249,41 @@ function pruneSessions(changesBySession) {
   if (oldest !== undefined) changesBySession.delete(oldest[0]);
 }
 
+/** The model-facing text of one assistant message, collapsed for a notice. */
+function assistantExcerptOf(event) {
+  const message = event && event.data ? event.data.message : undefined;
+  const content = message && Array.isArray(message.content) ? message.content : undefined;
+  if (content === undefined) return undefined;
+  let text = '';
+  for (const block of content) {
+    if (block && block.type === 'text' && typeof block.text === 'string') text += ` ${block.text}`;
+  }
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return collapsed === '' ? undefined : collapsed.slice(0, 200);
+}
+
+/** Append one finished turn to the queue the browser half drains. */
+function recordCompletion(completions, sessionId, event) {
+  const reason = event.data ? event.data.reason : undefined;
+  const tone = COMPLETION_TONES[reason && reason.kind];
+  if (tone === undefined) {
+    completions.excerpts.delete(sessionId);
+    return;
+  }
+  completions.next += 1;
+  completions.list.push({
+    id: completions.next,
+    sessionId,
+    tone,
+    detail: tone === 'error' ? (reason && reason.error ? reason.error.message : undefined) : completions.excerpts.get(sessionId),
+    at: Date.now(),
+  });
+  if (completions.list.length > MAX_COMPLETIONS) completions.list.splice(0, completions.list.length - MAX_COMPLETIONS);
+  completions.excerpts.delete(sessionId);
+}
+
 /** Remember the summary announced by one `workspace/changes` event. */
-function trackSessionEvent(ctx, changesBySession, session, event) {
+function trackSessionEvent(ctx, changesBySession, completions, session, event) {
   if (!event) return;
   const sessionId = session && (session.header?.id ?? session.id);
   if (typeof sessionId !== 'string' || sessionId === '') return;
@@ -247,6 +291,16 @@ function trackSessionEvent(ctx, changesBySession, session, event) {
   // longer describes what this turn is changing.
   if (event.type === 'turn/start') {
     changesBySession.delete(sessionId);
+    completions.excerpts.delete(sessionId);
+    return;
+  }
+  if (event.type === 'assistant/message') {
+    const text = assistantExcerptOf(event);
+    if (text !== undefined) completions.excerpts.set(sessionId, text);
+    return;
+  }
+  if (event.type === 'turn/end') {
+    recordCompletion(completions, sessionId, event);
     return;
   }
   if (event.type !== 'workspace/changes') return;
@@ -280,6 +334,215 @@ function trackSessionCwd(cwdBySession, session, event) {
   const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : undefined;
   if (typeof sessionId !== 'string' || sessionId === '' || cwd === undefined) return;
   cwdBySession.set(sessionId, cwd);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Live turn changes.
+//
+// DSH records `workspace/changes` only while a turn is stopping, so the
+// composer badge would otherwise appear after the answer. This half keeps a
+// per-turn git baseline instead: the badge polls a live summary during the run,
+// and the Client asks for one file's unified diff on demand.
+// ---------------------------------------------------------------------------------------------
+
+/** The git executable the Host resolved for this process; plain `git` until then. */
+let gitExecutable = 'git';
+
+/** Run one git command inside a repository; undefined when git is unavailable. */
+async function gitRun(root, args) {
+  try {
+    const { stdout } = await execFileAsync(gitExecutable, args, { cwd: root, windowsHide: true, maxBuffer: 16 << 20 });
+    return stdout;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The repository that contains one working directory, if any. */
+async function gitTopLevel(cwd) {
+  if (typeof cwd !== 'string' || cwd === '') return undefined;
+  const top = await gitRun(cwd, ['rev-parse', '--show-toplevel']);
+  if (top === undefined) return undefined;
+  const root = top.trim();
+  return root === '' ? undefined : root;
+}
+
+/**
+ * Snapshot the working tree a turn starts from without touching it: `git stash
+ * create` commits tracked modifications (it never touches the stash list), and
+ * HEAD covers the clean case. Untracked files are remembered by path so files
+ * the turn creates later can be counted as additions.
+ */
+async function captureLiveBaseline(cwd) {
+  const root = await gitTopLevel(cwd);
+  if (root === undefined) return undefined;
+  const stashed = ((await gitRun(root, ['stash', 'create'])) ?? '').trim();
+  const head = ((await gitRun(root, ['rev-parse', 'HEAD'])) ?? '').trim();
+  const ref = stashed !== '' ? stashed : head;
+  if (ref === '') return undefined;
+  const others = (await gitRun(root, ['ls-files', '--others', '--exclude-standard'])) ?? '';
+  return { root, ref, untrackedAtStart: new Set(others.split(/\r?\n/).filter((line) => line !== '')) };
+}
+
+/** Line counts of one file, or why it cannot be counted. */
+function countFileLines(absolute) {
+  try {
+    const data = readFileSync(absolute);
+    if (data.length > MAX_LIVE_FILE_BYTES) return { oversized: true };
+    if (data.includes(0)) return { binary: true };
+    const text = data.toString('utf8');
+    if (text === '') return { lines: 0 };
+    return { lines: text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * One `git diff --numstat -z` output as per-file counts. A rename carries an
+ * empty path followed by the old and the new path, which is why the parse walks
+ * records instead of splitting on newlines.
+ */
+function parseNumstat(output) {
+  const entries = [];
+  const parts = output.split('\0');
+  for (let index = 0; index < parts.length; index += 1) {
+    const record = parts[index];
+    if (record === '' || record === undefined) continue;
+    const match = /^(-|\d+)\t(-|\d+)\t([\s\S]*)$/.exec(record);
+    if (match === null) continue;
+    let path = match[3];
+    if (path === '') {
+      const oldPath = parts[index + 1] ?? '';
+      path = parts[index + 2] ?? oldPath;
+      index += 2;
+    }
+    if (path === '') continue;
+    const binary = match[1] === '-' || match[2] === '-';
+    entries.push({
+      path,
+      display: path,
+      added: binary ? 0 : Number(match[1]),
+      deleted: binary ? 0 : Number(match[2]),
+      binary,
+      oversized: false,
+    });
+  }
+  return entries;
+}
+
+/** Every untracked path from one `git status --porcelain -z` output. */
+function parseUntracked(output) {
+  const paths = [];
+  const parts = output.split('\0');
+  for (let index = 0; index < parts.length; index += 1) {
+    const record = parts[index];
+    if (record === undefined || record.length < 4) continue;
+    const code = record.slice(0, 2);
+    if (code === '??') paths.push(record.slice(3));
+    else if (code.includes('R') || code.includes('C')) index += 1;
+  }
+  return paths;
+}
+
+/** The live summary of one running turn, or null when nothing changed yet. */
+async function computeLiveChanges(state) {
+  const baseline = await state.baseline;
+  if (baseline === undefined) return null;
+  const { root, ref, untrackedAtStart } = baseline;
+  const numstat = (await gitRun(root, ['diff', '--numstat', '-z', '--find-renames', ref])) ?? '';
+  const files = new Map();
+  for (const entry of parseNumstat(numstat)) files.set(entry.path, entry);
+  const status = (await gitRun(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])) ?? '';
+  for (const path of parseUntracked(status)) {
+    if (untrackedAtStart.has(path) || files.has(path)) continue;
+    const counted = countFileLines(join(root, path));
+    if (counted === undefined) continue;
+    files.set(path, {
+      path,
+      display: path,
+      added: typeof counted.lines === 'number' ? counted.lines : 0,
+      deleted: 0,
+      binary: counted.binary === true,
+      oversized: counted.oversized === true,
+    });
+  }
+  const sorted = [...files.values()].sort((left, right) => left.display.localeCompare(right.display));
+  const summary = {
+    turn: state.turn,
+    total: sorted.length,
+    added: sorted.reduce((sum, file) => sum + file.added, 0),
+    deleted: sorted.reduce((sum, file) => sum + file.deleted, 0),
+    files: sorted.slice(0, MAX_LIVE_FILES),
+    live: true,
+  };
+  return summary.total === 0 ? null : summary;
+}
+
+/** The live summary for one session, cached briefly so polling stays cheap. */
+async function liveChangesOf(state) {
+  if (state === undefined) return null;
+  const now = Date.now();
+  if (now - state.cache.at < LIVE_CACHE_MS) return state.cache.changes;
+  const changes = await computeLiveChanges(state);
+  state.cache = { at: Date.now(), changes };
+  return changes;
+}
+
+/** Open a live baseline at `turn/start` and close it at `turn/end`. */
+function trackLiveState(liveBySession, cwdBySession, session, event) {
+  if (!event) return;
+  const sessionId = session && (session.header?.id ?? session.id);
+  if (typeof sessionId !== 'string' || sessionId === '') return;
+  if (event.type === 'turn/start') {
+    const cwd = (session && session.header && typeof session.header.cwd === 'string' && session.header.cwd !== '')
+      ? session.header.cwd
+      : cwdBySession.get(sessionId);
+    if (typeof cwd !== 'string' || cwd === '') return;
+    liveBySession.set(sessionId, {
+      cwd,
+      turn: Number.isFinite(event.data?.turn) ? event.data.turn : 0,
+      running: true,
+      baseline: captureLiveBaseline(cwd),
+      cache: { at: 0, changes: null },
+    });
+    if (liveBySession.size > MAX_TRACKED_SESSIONS) liveBySession.delete(liveBySession.keys().next().value);
+    return;
+  }
+  const state = liveBySession.get(sessionId);
+  if (state !== undefined && event.type === 'turn/end') state.running = false;
+}
+
+/** One file's unified diff against the turn baseline, or undefined when unknown. */
+async function liveDiffOf(liveBySession, sessionId, requestPath) {
+  const state = liveBySession.get(sessionId);
+  if (state === undefined) return undefined;
+  const baseline = await state.baseline;
+  if (baseline === undefined) return undefined;
+  const relative = String(requestPath ?? '').trim().replaceAll('\\', '/');
+  if (relative === '' || relative.startsWith('/') || relative.split('/').includes('..')) return undefined;
+  const { root, ref } = baseline;
+  const tracked = await gitRun(root, ['diff', '--no-color', '--unified=3', ref, '--', relative]);
+  if (tracked !== undefined && tracked !== '') return tracked;
+  const absolute = join(root, relative);
+  const counted = countFileLines(absolute);
+  if (counted === undefined || counted.binary === true || counted.oversized === true) return '';
+  const text = readFileSync(absolute, 'utf8');
+  const lines = text === '' ? [] : (text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n'));
+  const header = [
+    `diff --git a/${relative} b/${relative}`,
+    'new file mode 100644',
+    '--- /dev/null',
+    `+++ b/${relative}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+  ];
+  return `${[...header, ...lines.map((line) => `+${line}`)].join('\n')}\n`;
+}
+
+/** Bound one diff so a huge file cannot stall the Client. */
+function truncateDiff(diff) {
+  if (Buffer.byteLength(diff, 'utf8') <= MAX_DIFF_BYTES) return { diff, truncated: false };
+  return { diff: Buffer.from(diff, 'utf8').subarray(0, MAX_DIFF_BYTES).toString('utf8'), truncated: true };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -599,7 +862,7 @@ async function handleApps(req, res, cwdBySession, ctx) {
   sendJson(res, 200, { ok: true, apps });
 }
 
-async function handleRequest(req, res, changesBySession, cwdBySession, ctx) {
+async function handleRequest(req, res, changesBySession, cwdBySession, liveBySession, completions, ctx) {
   try {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (url.pathname === OPEN_PATH) {
@@ -616,7 +879,44 @@ async function handleRequest(req, res, changesBySession, cwdBySession, ctx) {
         return;
       }
       const sessionId = url.searchParams.get('session') ?? '';
-      sendJson(res, 200, { changes: changesBySession.get(sessionId) ?? null });
+      const recorded = changesBySession.get(sessionId);
+      if (recorded !== undefined) {
+        sendJson(res, 200, { changes: recorded, running: false });
+        return;
+      }
+      const state = liveBySession.get(sessionId);
+      const changes = await liveChangesOf(state);
+      sendJson(res, 200, { changes, running: state !== undefined && state.running === true });
+      return;
+    }
+    if (url.pathname === COMPLETIONS_PATH) {
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { error: 'method not allowed' });
+        return;
+      }
+      const raw = url.searchParams.get('after');
+      const parsed = raw === null ? Number.NaN : Number(raw);
+      // Without a cursor the Client only learns where the queue stands, so a
+      // page load never replays notices the user already saw.
+      const list = Number.isFinite(parsed)
+        ? completions.list.filter((item) => item.id > parsed)
+        : [];
+      sendJson(res, 200, { completions: list, last: completions.next });
+      return;
+    }
+    if (url.pathname === LIVE_DIFF_PATH) {
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { error: 'method not allowed' });
+        return;
+      }
+      const sessionId = url.searchParams.get('session') ?? '';
+      const diff = await liveDiffOf(liveBySession, sessionId, url.searchParams.get('path') ?? '');
+      if (diff === undefined) {
+        sendJson(res, 404, { error: 'no live diff for this turn' });
+        return;
+      }
+      const bounded = truncateDiff(diff);
+      sendJson(res, 200, { diff: bounded.diff, truncated: bounded.truncated });
       return;
     }
     if (url.pathname !== SOUND_PATH) {
@@ -655,14 +955,30 @@ function migrateLegacyStore() {
 
 export function apply(ctx) {
   migrateLegacyStore();
+  // Resolve git the way the Host does (a GUI process may not inherit a shell
+  // PATH); the plain name stays the fallback when the capability is absent.
+  void (async () => {
+    try {
+      const subprocess = ctx.get('subprocess');
+      if (!subprocess || typeof subprocess.resolveExecutable !== 'function') return;
+      const resolved = await subprocess.resolveExecutable('git', undefined, new AbortController().signal);
+      if (typeof resolved === 'string' && resolved !== '') gitExecutable = resolved;
+    } catch {
+      /* the live summary simply stays unavailable */
+    }
+  })();
   const changesBySession = new Map();
   const cwdBySession = new Map();
+  const liveBySession = new Map();
+  // Finished turns of every Session, drained by the browser half's poll.
+  const completions = { next: 0, list: [], excerpts: new Map() };
 
   ctx.effect(
     () =>
       ctx.on('session/event', (session, event) => {
         trackSessionCwd(cwdBySession, session, event);
-        trackSessionEvent(ctx, changesBySession, session, event);
+        trackSessionEvent(ctx, changesBySession, completions, session, event);
+        trackLiveState(liveBySession, cwdBySession, session, event);
       }),
     'dsh-interaction-optimize: workspace changes',
   );
@@ -673,7 +989,7 @@ export function apply(ctx) {
         scoped.webServer.register({
           kind: 'prefix',
           path: ROUTE_PREFIX,
-          handler: (req, res) => handleRequest(req, res, changesBySession, cwdBySession, ctx),
+          handler: (req, res) => handleRequest(req, res, changesBySession, cwdBySession, liveBySession, completions, ctx),
         }),
       'dsh-interaction-optimize: sound, changes and file routes',
     );

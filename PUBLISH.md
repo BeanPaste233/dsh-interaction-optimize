@@ -4,7 +4,7 @@
 
 当前准备状态（`npm pack --dry-run` 已通过）：
 
-- 包名 `dsh-interaction-optimize`，版本 `2.0.0`，npm 上仍可用（未占用）
+- 包名 `dsh-interaction-optimize`，版本 `2.1.0`，npm 上仍可用（未占用）
 - 发布内容 9 个文件、约 35 kB：
   `index.js`、`client.js`、`cordis.patch.yml`、`locale/{en,zh}.json`、`icon.svg`、`README.md`、`LICENSE`、`package.json`
 - 没有 `postinstall`、没有构建产物、没有第三方运行时依赖
@@ -76,7 +76,7 @@ npm view dsh-interaction-optimize version
 
 ## 6. 版本与更新
 
-- 功能改动 → `version` 递增（semver）。改名算不兼容，已升到 `2.0.0`。
+- 功能改动 → `version` 递增（semver）。改名算不兼容，已升到 `2.0.0`；实时增删统计升到 `2.1.0`。
 - 发布后打 git tag（`v2.0.0`），写一句 release note；市场会显示版本说明。
 - 用户在市场里点「更新」即可拉到新版本；从压缩包/GitHub 安装的条目只认自己的来源。
 

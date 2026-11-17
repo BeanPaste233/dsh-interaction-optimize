@@ -27,29 +27,30 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-interaction-optimize';
     const ROW_CONFIG_KEY = 'dsh-interaction-optimize#dsh-interaction-optimize';
-    /** A precise `turn/end` reading suppresses the running-flag fallback for this long. */
-    const PRECISE_DEDUPE_MS = 2500;
     const MAX_DETAIL_CHARS = 160;
     /** Kept from the pre-rename plugin so existing settings survive the rename. */
     const SETTINGS_COOKIE = 'codex_like';
     const SETTINGS_STORAGE = 'codex-like.settings';
     const SOUND_ROUTE = '/dsh-interaction-optimize/sound';
     const CHANGES_ROUTE = '/dsh-interaction-optimize/changes';
+    const LIVE_DIFF_ROUTE = '/dsh-interaction-optimize/live-diff';
+    const COMPLETIONS_ROUTE = '/dsh-interaction-optimize/completions';
+    /** How often the overlay drains the Host's finished-turn queue. */
+    const COMPLETIONS_POLL_MS = 1000;
+    /** The right-Sidebar tab type that owns the live change list. */
+    const LIVE_KIND = 'dsh-interaction-optimize-live';
+    /** The implementation identity the tab body registers under. */
+    const LIVE_TAB_ID = 'dsh-interaction-optimize/live-changes';
     const MAX_SOUND_BYTES = 4 * 1024 * 1024;
     /** Poll cadence for the diff badge while a turn is running. */
     const CHANGES_POLL_MS = 1200;
     /** Slower cadence while idle, so a summary recorded just after turn end still lands. */
     const CHANGES_IDLE_POLL_MS = 5000;
 
-    const TONE_BY_KIND = {
-      completed: 'success',
-      error: 'error',
-      'max-tokens': 'warning',
-    };
-
     const DEFAULT_SETTINGS = {
       inAppToast: true,
       diffBadge: true,
+      annotations: true,
       fileMenu: true,
       sound: true,
       soundSource: 'chime',
@@ -67,6 +68,7 @@ window.__ModuleLoader__.load({
 
     const ZH = {
       'toast.completed': '本轮执行完成',
+      'toast.open': '点击跳到当前对话',
       'toast.error': '本轮执行失败',
       'toast.maxTokens': '本轮输出已达上限',
       'toast.close': '关闭提示',
@@ -78,6 +80,16 @@ window.__ModuleLoader__.load({
       'diff.openReview': '在侧边栏查看本轮改动',
       'diff.binary': '二进制',
       'diff.oversized': '过大',
+      'diff.live': '本轮进行中',
+      'diff.openLive': '查看本轮实时改动',
+      'diff.liveTitle': '本轮改动',
+      'diff.loading': '加载中…',
+      'diff.empty': '没有可显示的改动',
+      'diff.failed': '无法读取 diff',
+      'diff.truncatedNote': '内容过长，已截断',
+      'diff.refresh': '刷新',
+      'diff.closePanel': '关闭',
+      'diff.ended': '回合已结束',
       'anno.add': '添加到对话',
       'anno.title': '添加注释',
       'anno.quoteLabel': '所选文本：',
@@ -102,7 +114,9 @@ window.__ModuleLoader__.load({
       'settings.system.permission.unsupported': '当前环境不支持系统通知。',
       'settings.system.permission.enable': '启用系统通知',
       'settings.diffBadge.title': '输入框上方增删统计',
-      'settings.diffBadge.desc': '在输入框上方显示本轮代码改动的新增/删除行数与文件数。',
+      'settings.diffBadge.desc': '在输入框上方显示本轮代码改动的新增/删除行数与文件数，点击可在右侧栏查看 diff。',
+      'settings.annotations.title': '划词注释',
+      'settings.annotations.desc': '在对话里选中文字即可添加评论，发送时随消息一起带给模型。',
       'settings.fileMenu.title': '文件右键菜单',
       'settings.fileMenu.desc': '在对话里右键文件链接：用默认应用打开、显示文件位置，或选择其他应用。',
       'fileMenu.open': '用默认应用打开',
@@ -138,6 +152,7 @@ window.__ModuleLoader__.load({
 
     const EN = {
       'toast.completed': 'Turn complete',
+      'toast.open': 'Open the conversation',
       'toast.error': 'Turn failed',
       'toast.maxTokens': 'Output limit reached',
       'toast.close': 'Dismiss',
@@ -149,6 +164,16 @@ window.__ModuleLoader__.load({
       'diff.openReview': "Open this turn's changes",
       'diff.binary': 'binary',
       'diff.oversized': 'too large',
+      'diff.live': 'Turn in progress',
+      'diff.openLive': 'View live changes for this turn',
+      'diff.liveTitle': 'Changes in this turn',
+      'diff.loading': 'Loading…',
+      'diff.empty': 'No changes to show',
+      'diff.failed': 'Could not read the diff',
+      'diff.truncatedNote': 'Truncated because of size',
+      'diff.refresh': 'Refresh',
+      'diff.closePanel': 'Close',
+      'diff.ended': 'Turn finished',
       'anno.add': 'Add to conversation',
       'anno.title': 'Add a comment',
       'anno.quoteLabel': 'Selected text:',
@@ -173,7 +198,9 @@ window.__ModuleLoader__.load({
       'settings.system.permission.unsupported': 'This environment does not support system notifications.',
       'settings.system.permission.enable': 'Allow system notifications',
       'settings.diffBadge.title': 'Diff badge above the composer',
-      'settings.diffBadge.desc': 'Show this turn\'s added/deleted line counts and changed file count above the input box.',
+      'settings.diffBadge.desc': 'Show this turn\'s added/deleted line counts and changed file count above the input box; click it to read the diff in the right Sidebar.',
+      'settings.annotations.title': 'Annotate selected text',
+      'settings.annotations.desc': 'Select text in the conversation to add comments that travel with your message.',
       'settings.fileMenu.title': 'File context menu',
       'settings.fileMenu.desc': 'Right-click a file link in the conversation to open it with the default app, reveal it in the file manager, or pick another app.',
       'fileMenu.open': 'Open with default app',
@@ -210,6 +237,9 @@ window.__ModuleLoader__.load({
     const CSS = [
       '.dsh-tct-layer{position:fixed;right:20px;bottom:20px;z-index:30;display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:none}',
       '.dsh-tct-card{pointer-events:auto;box-sizing:border-box;display:flex;align-items:flex-start;gap:10px;width:max-content;min-width:240px;max-width:min(380px,calc(100vw - 40px));padding:12px 10px 12px 14px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 12px 32px color-mix(in srgb,var(--dsw-alias-label-primary) 14%,transparent);animation:dsh-tct-in 180ms cubic-bezier(.2,.8,.2,1)}',
+      '.dsh-tct-card[data-action="open"]{cursor:pointer;transition:background-color 120ms ease}',
+      '.dsh-tct-card[data-action="open"]:hover{background:var(--dsw-alias-bg-layer-2)}',
+      '.dsh-tct-card[data-action="open"]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
       '.dsh-tct-icon{display:flex;flex:0 0 auto;align-items:center;justify-content:center;width:20px;height:20px;margin-top:1px;color:var(--dsw-alias-state-success-primary)}',
       '.dsh-tct-card[data-tone="error"] .dsh-tct-icon{color:var(--dsw-alias-state-error-primary)}',
       '.dsh-tct-card[data-tone="warning"] .dsh-tct-icon{color:var(--dsw-alias-state-warn-primary)}',
@@ -294,6 +324,31 @@ window.__ModuleLoader__.load({
       'button.dsh-cl-pill:hover{background:var(--dsw-alias-bg-layer-2)}',
       'button.dsh-cl-pill:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
       '.dsh-cl-add{color:var(--dsw-alias-state-success-primary);font-weight:600;font-variant-numeric:tabular-nums}',
+      '.dsh-cl-live-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-success-primary);animation:dsh-cl-pulse 1.4s ease-in-out infinite}'
+      ,'@keyframes dsh-cl-pulse{0%,100%{opacity:.35}50%{opacity:1}}'
+      ,'.dsh-cl-live-layer{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:32px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 24%,transparent)}'
+      ,'.dsh-cl-live-card{display:flex;flex-direction:column;width:min(1040px,100%);height:min(720px,100%);overflow:hidden;border:0.5px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 24px 64px color-mix(in srgb,var(--dsw-alias-label-primary) 26%,transparent)}'
+      ,'.dsh-cl-live-head{display:flex;flex:0 0 auto;align-items:center;gap:8px;padding:10px 14px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}'
+      ,'.dsh-cl-live-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}'
+      ,'.dsh-cl-live-btn{flex:0 0 auto;padding:3px 10px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:16px;cursor:pointer}'
+      ,'.dsh-cl-live-btn:hover{background:var(--dsw-alias-bg-layer-2)}'
+      ,'.dsh-cl-live-body{display:flex;flex:1 1 auto;min-height:0}'
+      ,'.dsh-cl-live-files{flex:0 0 280px;min-width:0;overflow:auto;padding:6px;border-right:0.5px solid var(--dsw-alias-border-l1)}'
+      ,'.dsh-cl-live-file{display:flex;align-items:center;gap:8px;box-sizing:border-box;width:100%;padding:6px 8px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:12px;line-height:16px;text-align:left;cursor:pointer}'
+      ,'.dsh-cl-live-file:hover{background:var(--dsw-alias-bg-layer-2)}'
+      ,'.dsh-cl-live-file[data-active="true"]{background:var(--dsw-alias-bg-layer-2)}'
+      ,'.dsh-cl-live-pane{flex:1 1 auto;min-width:0;overflow:auto;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:18px;white-space:pre;tab-size:2}'
+      ,'.dsh-cl-live-line[data-kind="add"]{color:var(--dsw-alias-state-success-primary)}'
+      ,'.dsh-cl-live-line[data-kind="del"]{color:var(--dsw-alias-state-error-primary)}'
+      ,'.dsh-cl-live-line[data-kind="hunk"]{color:var(--dsw-alias-label-secondary)}'
+      ,'.dsh-cl-live-line[data-kind="meta"]{color:var(--dsw-alias-label-secondary);opacity:.75}'
+      ,'.dsh-cl-live-note{padding:4px 0;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-cl-side{display:flex;flex-direction:column;box-sizing:border-box;height:100%;min-height:0;font-size:12px;line-height:16px;color:var(--dsw-alias-label-primary)}',
+      '.dsh-cl-side-head{display:flex;flex:0 0 auto;align-items:center;gap:8px;padding:8px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}',
+      '.dsh-cl-side-head .dsh-cl-live-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}',
+      '.dsh-cl-side-dot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-success-primary);animation:dsh-cl-pulse 1.4s ease-in-out infinite}',
+      '.dsh-cl-side-files{flex:0 0 auto;max-height:38%;overflow:auto;padding:4px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}',
+      '.dsh-cl-side-pane{flex:1 1 auto;min-height:0;overflow:auto;padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:18px;white-space:pre;tab-size:2}',
       '.dsh-cl-del{color:var(--dsw-alias-state-error-primary);font-weight:600;font-variant-numeric:tabular-nums}',
       '@keyframes dsh-tct-in{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}',
       '@media (prefers-reduced-motion:reduce){.dsh-tct-card{animation:none}}',
@@ -308,6 +363,7 @@ window.__ModuleLoader__.load({
       return {
         inAppToast: typeof value.inAppToast === 'boolean' ? value.inAppToast : DEFAULT_SETTINGS.inAppToast,
         diffBadge: typeof value.diffBadge === 'boolean' ? value.diffBadge : DEFAULT_SETTINGS.diffBadge,
+        annotations: typeof value.annotations === 'boolean' ? value.annotations : DEFAULT_SETTINGS.annotations,
         fileMenu: typeof value.fileMenu === 'boolean' ? value.fileMenu : DEFAULT_SETTINGS.fileMenu,
         sound: typeof value.sound === 'boolean' ? value.sound : DEFAULT_SETTINGS.sound,
         soundSource: value.soundSource === 'custom' ? 'custom' : 'chime',
@@ -475,7 +531,7 @@ window.__ModuleLoader__.load({
       return settings.systemNotify === 'always' || pageHidden();
     }
 
-    function showSystemNotification(title, body, tag) {
+    function showSystemNotification(title, body, tag, onActivate) {
       try {
         if (notificationPermission() !== 'granted') return;
         const notification = new Notification(title, {
@@ -490,10 +546,40 @@ window.__ModuleLoader__.load({
           } catch {
             /* focus may be refused outside a click handler on some platforms */
           }
+          if (typeof onActivate === 'function') {
+            try {
+              onActivate();
+            } catch {
+              /* a missing conversation view must not break the notification */
+            }
+          }
         };
       } catch {
         /* permission or platform refused the notification */
       }
+    }
+
+    /** Put the conversation back on its newest message; safe when nothing is mounted. */
+    function scrollConversationToBottom() {
+      if (typeof document === 'undefined') return;
+      for (const selector of ['[data-conversation-scroll]', '[data-conversation-region="chat"]']) {
+        const scroll = document.querySelector(selector);
+        if (scroll === null) continue;
+        scroll.scrollTop = scroll.scrollHeight;
+      }
+    }
+
+    /**
+     * Reveal the conversation once the view has painted: a session switch
+     * destroys and re-mounts the scroll body, so one frame is not enough.
+     */
+    function revealConversation() {
+      if (typeof window === 'undefined') return;
+      window.requestAnimationFrame(() => {
+        scrollConversationToBottom();
+        window.setTimeout(scrollConversationToBottom, 90);
+        window.setTimeout(scrollConversationToBottom, 320);
+      });
     }
 
     // ------------------------------------------------------------------
@@ -1063,29 +1149,6 @@ window.__ModuleLoader__.load({
     // Turn signals and presentation helpers.
     // ------------------------------------------------------------------
 
-    /**
-     * Read the plain-text part of one durable `assistant/message` event.
-     * @param event - the session event.
-     * @returns collapsed text, or undefined when the message carries none.
-     */
-    function assistantTextOf(event) {
-      const content = event && event.data && event.data.message ? event.data.message.content : undefined;
-      if (!Array.isArray(content)) return undefined;
-      let text = '';
-      for (const block of content) {
-        if (block && block.type === 'text' && typeof block.text === 'string') text += ` ${block.text}`;
-      }
-      const collapsed = text.replace(/\s+/g, ' ').trim();
-      return collapsed === '' ? undefined : collapsed;
-    }
-
-    /** Read one `turn/end` reason kind as a display tone, or null when nothing should be shown. */
-    function toneOf(kind) {
-      return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(TONE_BY_KIND, kind)
-        ? TONE_BY_KIND[kind]
-        : null;
-    }
-
     function titleKeyOf(tone) {
       if (tone === 'error') return 'toast.error';
       if (tone === 'warning') return 'toast.maxTokens';
@@ -1115,12 +1178,6 @@ window.__ModuleLoader__.load({
       return status !== undefined && status.running === true;
     }
 
-    function selectSessionTitle(state, sessionId) {
-      if (typeof sessionId !== 'string' || !state || !state.byId) return undefined;
-      const row = state.byId[sessionId];
-      return row && typeof row.displayTitle === 'string' ? row.displayTitle : undefined;
-    }
-
     // ------------------------------------------------------------------
     // In-app toast (shell.overlay).
     // ------------------------------------------------------------------
@@ -1129,32 +1186,21 @@ window.__ModuleLoader__.load({
       const t = typeof props.t === 'function' ? props.t : (key) => key;
       const useSessions = typeof props.useSessions === 'function' ? props.useSessions : () => undefined;
       const useSessionStatus = typeof props.useSessionStatus === 'function' ? props.useSessionStatus : () => false;
-      const getSessionEventSource = props.getSessionEventSource;
+      const openConversation = props.openConversation;
       const settings = React.useSyncExternalStore(subscribeSettings, getSettings);
 
       const sessionId = useSessions(selectMainSessionId);
       const running = useSessionStatus((snapshot) => selectRunning(snapshot, sessionId));
-      const sessionTitle = useSessions((state) => selectSessionTitle(state, sessionId));
-
       const [toast, setToast] = React.useState(null);
       const [hovered, setHovered] = React.useState(false);
       const [pageVisible, setPageVisible] = React.useState(() => (typeof document === 'undefined' ? true : !document.hidden));
       const seqRef = React.useRef(0);
-      const preciseAtRef = React.useRef(0);
-      const previousRunningRef = React.useRef({ sessionId: undefined, running: false });
-      // Read through refs so a title/settings refresh never re-subscribes the
-      // event source (a resubscription re-baselines the revision and could skip
-      // a turn boundary).
-      const sessionTitleRef = React.useRef(sessionTitle);
-      sessionTitleRef.current = sessionTitle;
       const settingsRef = React.useRef(settings);
       settingsRef.current = settings;
       const translateRef = React.useRef(t);
       translateRef.current = t;
       const sessionIdRef = React.useRef(sessionId);
       sessionIdRef.current = sessionId;
-      // The last reply text seen in the current turn, shown as the excerpt.
-      const lastReplyRef = React.useRef(undefined);
 
       const showToast = React.useCallback((tone, detail, options) => {
         const opts = options !== null && typeof options === 'object' ? options : {};
@@ -1169,6 +1215,10 @@ window.__ModuleLoader__.load({
           detail: truncate(detail),
           holdSeconds: hold,
           preview: opts.preview === true,
+          sessionId:
+            typeof opts.sessionId === 'string' && opts.sessionId !== ''
+              ? opts.sessionId
+              : sessionIdRef.current,
         });
       }, []);
 
@@ -1179,17 +1229,26 @@ window.__ModuleLoader__.load({
 
       /** Fan one finished turn out to every enabled channel. */
       const deliver = React.useCallback(
-        (tone, detail) => {
+        (tone, detail, sessionId) => {
           const current = settingsRef.current;
+          const target = typeof sessionId === 'string' && sessionId !== '' ? sessionId : sessionIdRef.current;
           const shown = truncate(detail);
-          if (current.inAppToast) showToast(tone, shown);
+          if (current.inAppToast) showToast(tone, shown, { sessionId: target });
           if (current.sound) playSelectedSound();
           if (shouldNotifySystem(current)) {
-            const currentSession = sessionIdRef.current;
+            const currentSession = target;
             showSystemNotification(
               translateRef.current(titleKeyOf(tone)),
               shown,
               typeof currentSession === 'string' ? currentSession : 'dsh-interaction-optimize',
+              // Clicking the OS notification lands on the same conversation.
+              () => {
+                if (typeof openConversationRef.current === 'function' && typeof currentSession === 'string') {
+                  openConversationRef.current(currentSession);
+                } else {
+                  revealConversation();
+                }
+              },
             );
           }
         },
@@ -1197,6 +1256,8 @@ window.__ModuleLoader__.load({
       );
       const deliverRef = React.useRef(deliver);
       deliverRef.current = deliver;
+      const openConversationRef = React.useRef(openConversation);
+      openConversationRef.current = openConversation;
 
       // Let the configuration page render a sample notice on demand, using the
       // display duration that page currently shows.
@@ -1211,64 +1272,38 @@ window.__ModuleLoader__.load({
         [showToast],
       );
 
-      // Precise signal: the session's own durable turn boundary.
-      const eventSource =
-        typeof sessionId === 'string' && typeof getSessionEventSource === 'function'
-          ? getSessionEventSource(sessionId)
-          : undefined;
-
+      // Completion queue: the Host records the finished turn of every Session,
+      // so a notice still arrives after switching to another conversation.
+      const completionCursorRef = React.useRef(undefined);
       React.useEffect(() => {
-        if (!eventSource || typeof eventSource.subscribe !== 'function' || typeof eventSource.getSnapshot !== 'function') {
-          return undefined;
-        }
-        lastReplyRef.current = undefined;
-        let revision = eventSource.getSnapshot().revision;
-        const unsubscribe = eventSource.subscribe(() => {
-          const snapshot = eventSource.getSnapshot();
-          if (!snapshot || snapshot.revision === revision) return;
-          revision = snapshot.revision;
-          const change = snapshot.change;
-          if (!change || change.kind !== 'append' || !Array.isArray(change.entries)) return;
-          for (const entry of change.entries) {
-            if (!entry || entry.type !== 'event' || !entry.event) continue;
-            const event = entry.event;
-            // Keep the newest reply text so the notice can excerpt the answer.
-            if (event.type === 'turn/start') {
-              lastReplyRef.current = undefined;
-              continue;
+        let cancelled = false;
+        const drain = async () => {
+          try {
+            const cursor = completionCursorRef.current;
+            const query = typeof cursor === 'number' ? '?after=' + cursor : '';
+            const response = await fetch(COMPLETIONS_ROUTE + query, { cache: 'no-store' });
+            if (!response.ok) return;
+            const data = await response.json();
+            if (cancelled || data === null) return;
+            if (typeof data.last === 'number') completionCursorRef.current = data.last;
+            const items = Array.isArray(data.completions) ? data.completions : [];
+            for (const item of items) {
+              if (!item || typeof item.tone !== 'string') continue;
+              deliverRef.current(item.tone, item.detail, item.sessionId);
             }
-            if (event.type === 'assistant/message') {
-              const text = assistantTextOf(event);
-              if (text !== undefined) lastReplyRef.current = text;
-              continue;
-            }
-            if (event.type !== 'turn/end') continue;
-            const reason = event.data ? event.data.reason : undefined;
-            const tone = toneOf(reason ? reason.kind : undefined);
-            // Record every observed boundary, including aborts, so the running-flag
-            // fallback stays quiet for a turn the precise signal already judged.
-            preciseAtRef.current = Date.now();
-            if (tone === null) continue;
-            const errorMessage = reason && reason.error ? reason.error.message : undefined;
-            deliverRef.current(
-              tone,
-              tone === 'error' ? errorMessage : (lastReplyRef.current ?? sessionTitleRef.current),
-            );
+          } catch {
+            /* the Host route may be unavailable */
           }
-        });
-        return unsubscribe;
-      }, [sessionId, eventSource]);
-
-      // Fallback signal: the status flag only ever flips off when the running
-      // interval ends, so a build without an event source still reports completion.
-      React.useEffect(() => {
-        const previous = previousRunningRef.current;
-        previousRunningRef.current = { sessionId, running };
-        if (previous.sessionId !== sessionId) return;
-        if (!previous.running || running) return;
-        if (Date.now() - preciseAtRef.current < PRECISE_DEDUPE_MS) return;
-        deliverRef.current('success', lastReplyRef.current ?? sessionTitleRef.current);
-      }, [sessionId, running]);
+        };
+        void drain();
+        const timer = window.setInterval(() => {
+          void drain();
+        }, COMPLETIONS_POLL_MS);
+        return () => {
+          cancelled = true;
+          window.clearInterval(timer);
+        };
+      }, []);
 
       // A new turn replaces the finished one's notice, but never a manual preview.
       React.useEffect(() => {
@@ -1317,6 +1352,23 @@ window.__ModuleLoader__.load({
         return () => window.clearTimeout(timer);
       }, [toast, hovered, pageVisible]);
 
+      /** Land on the conversation this notice belongs to, then retire the card. */
+      const activate = () => {
+        const target = toast === null ? undefined : toast.sessionId;
+        if (
+          toast !== null &&
+          toast.preview !== true &&
+          typeof openConversation === 'function' &&
+          typeof target === 'string' &&
+          target !== ''
+        ) {
+          openConversation(target);
+        } else {
+          revealConversation();
+        }
+        dismiss();
+      };
+
       return h('div', { className: 'dsh-tct-layer' }, [
         h('style', { key: 'style' }, CSS),
         toast === null
@@ -1330,7 +1382,16 @@ window.__ModuleLoader__.load({
                 'aria-live': 'polite',
                 'aria-atomic': 'true',
                 'data-tone': toast.tone,
+                'data-action': 'open',
                 translate: 'no',
+                title: t('toast.open'),
+                tabIndex: 0,
+                onClick: activate,
+                onKeyDown: (event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  activate();
+                },
                 onMouseEnter: () => setHovered(true),
                 onMouseLeave: () => setHovered(false),
               },
@@ -1350,7 +1411,10 @@ window.__ModuleLoader__.load({
                     className: 'dsh-tct-close',
                     'aria-label': t('toast.close'),
                     title: t('toast.close'),
-                    onClick: dismiss,
+                    onClick: (event) => {
+                      event.stopPropagation();
+                      dismiss();
+                    },
                   },
                   closeIcon(),
                 ),
@@ -1373,21 +1437,32 @@ window.__ModuleLoader__.load({
       const t = typeof props.t === 'function' ? props.t : (key) => key;
       const sessionId = props.sessionId;
       const useSessionStatus = typeof props.useSessionStatus === 'function' ? props.useSessionStatus : () => false;
+      const getSessionEventSource = props.getSessionEventSource;
       const settings = React.useSyncExternalStore(subscribeSettings, getSettings);
       const enabled = settings.diffBadge;
-      const running = useSessionStatus((snapshot) =>
+      const statusRunning = useSessionStatus((snapshot) =>
         snapshot && typeof snapshot.get === 'function' && typeof sessionId === 'string'
           ? snapshot.get(sessionId)?.running === true
           : false,
       );
       const [changes, setChanges] = React.useState(null);
+      const [hostRunning, setHostRunning] = React.useState(false);
       const [filesOpen, setFilesOpen] = React.useState(false);
+      const [panelOpen, setPanelOpen] = React.useState(false);
+      const [panelIndex, setPanelIndex] = React.useState(0);
+      const sessionRef = React.useRef(null);
+      const refreshRef = React.useRef(() => {});
+      const running = statusRunning || hostRunning;
 
       React.useEffect(() => {
         if (!enabled) return undefined;
         if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+        if (sessionRef.current !== sessionId) {
+          sessionRef.current = sessionId;
+          setChanges(null);
+          setPanelOpen(false);
+        }
         let cancelled = false;
-        setChanges(null);
         const load = async () => {
           try {
             const response = await fetch(`${CHANGES_ROUTE}?session=${encodeURIComponent(sessionId)}`, {
@@ -1395,10 +1470,15 @@ window.__ModuleLoader__.load({
             });
             if (!response.ok) return;
             const data = await response.json();
-            if (!cancelled) setChanges(data && data.changes ? data.changes : null);
+            if (cancelled) return;
+            setChanges(data && data.changes ? data.changes : null);
+            setHostRunning(data !== null && data.running === true);
           } catch {
             /* the Host route is unavailable (older Host half) */
           }
+        };
+        refreshRef.current = () => {
+          void load();
         };
         void load();
         const period = running ? CHANGES_POLL_MS : CHANGES_IDLE_POLL_MS;
@@ -1411,6 +1491,53 @@ window.__ModuleLoader__.load({
         };
       }, [enabled, sessionId, running]);
 
+      // Immediate refresh on the session's own events: a tool result is the
+      // moment a file changed, so the badge lands before the next poll would.
+      React.useEffect(() => {
+        if (!enabled || typeof sessionId !== 'string' || sessionId === '') return undefined;
+        if (typeof getSessionEventSource !== 'function') return undefined;
+        const eventSource = getSessionEventSource(sessionId);
+        if (!eventSource || typeof eventSource.subscribe !== 'function' || typeof eventSource.getSnapshot !== 'function') {
+          return undefined;
+        }
+        let revision = eventSource.getSnapshot().revision;
+        let timer = 0;
+        const unsubscribe = eventSource.subscribe(() => {
+          const snapshot = eventSource.getSnapshot();
+          if (!snapshot || snapshot.revision === revision) return;
+          revision = snapshot.revision;
+          const change = snapshot.change;
+          if (!change || change.kind !== 'append' || !Array.isArray(change.entries)) return;
+          const relevant = change.entries.some(
+            (entry) =>
+              entry &&
+              entry.type === 'event' &&
+              entry.event &&
+              (entry.event.type === 'tool/result' ||
+                entry.event.type === 'turn/start' ||
+                entry.event.type === 'turn/end'),
+          );
+          if (!relevant || timer !== 0) return;
+          timer = window.setTimeout(() => {
+            timer = 0;
+            refreshRef.current();
+          }, 120);
+        });
+        return () => {
+          unsubscribe();
+          if (timer !== 0) window.clearTimeout(timer);
+        };
+      }, [enabled, sessionId]);
+
+      React.useEffect(() => {
+        if (!panelOpen) return undefined;
+        const onKey = (event) => {
+          if (event.key === 'Escape') setPanelOpen(false);
+        };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+      }, [panelOpen]);
+
       if (!enabled || changes === null) return null;
       const added = Number.isFinite(changes.added) ? changes.added : 0;
       const deleted = Number.isFinite(changes.deleted) ? changes.deleted : 0;
@@ -1420,12 +1547,28 @@ window.__ModuleLoader__.load({
       const formatCount = (value) => Number(value).toLocaleString('en-US');
       const fileLabel = total === 1 ? t('diff.filesChangedOne') : t('diff.filesChangedMany');
       const openChangesReview = props.openChangesReview;
-      const canOpen = typeof openChangesReview === 'function' && Number.isFinite(changes.seq);
+      const openLiveChanges = props.openLiveChanges;
+      // DSH records a summary only when a turn stops; until then the Host half
+      // serves a live git summary, and its diff opens in the plugin's own panel.
+      const live = changes.live === true;
+      const canReview = typeof openChangesReview === 'function' && Number.isFinite(changes.seq);
+      const canOpen = live || canReview;
       const files = Array.isArray(changes.files) ? changes.files : [];
 
-      const openReview = (index) => {
+      const openAt = (index) => {
+        const fileIndex = Number.isFinite(index) && index >= 0 ? index : 0;
+        if (live) {
+          // The docked list is the primary surface; the overlay stays as the
+          // fallback for a composition without a right Sidebar.
+          const opened = typeof openLiveChanges === 'function' ? openLiveChanges(sessionId) : false;
+          if (opened !== true) {
+            setPanelIndex(fileIndex);
+            setPanelOpen(true);
+          }
+          return;
+        }
         try {
-          openChangesReview(sessionId, changes.seq, changes.turn, index);
+          openChangesReview(sessionId, changes.seq, changes.turn, fileIndex);
         } catch {
           /* no right Sidebar in this composition, or no on-screen session */
         }
@@ -1434,31 +1577,32 @@ window.__ModuleLoader__.load({
       const pillProps = { className: 'dsh-cl-pill' };
       if (canOpen) {
         pillProps.type = 'button';
-        pillProps['aria-label'] = t('diff.openReview');
-        pillProps.onClick = () => openReview(0);
+        pillProps['aria-label'] = live ? t('diff.openLive') : t('diff.openReview');
+        pillProps.title = live ? t('diff.openLive') : t('diff.openReview');
+        pillProps.onClick = () => openAt(0);
       } else {
         pillProps.role = 'status';
       }
 
       const fileRows = files.map((file, index) => {
         const name = (typeof file.display === 'string' ? file.display : file.path) || '';
+        const mark =
+          file.binary === true ? t('diff.binary') : file.oversized === true ? t('diff.oversized') : undefined;
         const counts =
-          file.binary === true
-            ? h('span', { key: 'counts', className: 'dsh-cl-file-note' }, t('diff.binary'))
-            : file.oversized === true
-              ? h('span', { key: 'counts', className: 'dsh-cl-file-note' }, t('diff.oversized'))
-              : [
-                  h(
-                    'span',
-                    { key: 'added', className: 'dsh-cl-file-add' },
-                    `+${formatCount(Number.isFinite(file.added) ? file.added : 0)}`,
-                  ),
-                  h(
-                    'span',
-                    { key: 'deleted', className: 'dsh-cl-file-del' },
-                    `-${formatCount(Number.isFinite(file.deleted) ? file.deleted : 0)}`,
-                  ),
-                ];
+          mark !== undefined
+            ? h('span', { key: 'counts', className: 'dsh-cl-file-note' }, mark)
+            : [
+                h(
+                  'span',
+                  { key: 'added', className: 'dsh-cl-file-add' },
+                  `+${formatCount(Number.isFinite(file.added) ? file.added : 0)}`,
+                ),
+                h(
+                  'span',
+                  { key: 'deleted', className: 'dsh-cl-file-del' },
+                  `-${formatCount(Number.isFinite(file.deleted) ? file.deleted : 0)}`,
+                ),
+              ];
         const rowProps = { key: `${index}:${name}`, className: 'dsh-cl-file', title: name };
         const children = [
           h('span', { key: 'name', className: 'dsh-cl-file-name' }, name),
@@ -1466,13 +1610,13 @@ window.__ModuleLoader__.load({
         ];
         if (!canOpen) return h('div', rowProps, children);
         rowProps.type = 'button';
-        rowProps.onClick = () => openReview(index);
+        rowProps.onClick = () => openAt(index);
         return h('button', rowProps, children);
       });
 
-      return h(
+      const badge = h(
         'div',
-        { className: 'dsh-cl-diff' },
+        { key: 'badge', className: 'dsh-cl-diff' },
         h(
           'div',
           {
@@ -1487,24 +1631,343 @@ window.__ModuleLoader__.load({
                   { key: 'pop-wrap', className: 'dsh-cl-pop-wrap' },
                   h(
                     'div',
-                    { className: 'dsh-cl-pop', role: 'group', 'aria-label': t('diff.openReview') },
+                    { className: 'dsh-cl-pop', role: 'group', 'aria-label': pillProps['aria-label'] ?? t('diff.openReview') },
                     fileRows,
                   ),
                 )
               : null,
-            h(
-              canOpen ? 'button' : 'span',
-              pillProps,
-              [
-                h('span', { key: 'files' }, `${total} ${fileLabel}`),
-                h('span', { key: 'added', className: 'dsh-cl-add' }, `+${formatCount(added)}`),
-                h('span', { key: 'deleted', className: 'dsh-cl-del' }, `-${formatCount(deleted)}`),
-              ],
-            ),
+            h(canOpen ? 'button' : 'span', pillProps, [
+              live ? h('span', { key: 'dot', className: 'dsh-cl-live-dot' }) : null,
+              h('span', { key: 'files' }, `${total} ${fileLabel}`),
+              h('span', { key: 'added', className: 'dsh-cl-add' }, `+${formatCount(added)}`),
+              h('span', { key: 'deleted', className: 'dsh-cl-del' }, `-${formatCount(deleted)}`),
+            ]),
           ],
         ),
       );
+
+      return h(
+        React.Fragment,
+        null,
+        badge,
+        panelOpen && live
+          ? h(LiveDiffPanel, {
+              key: 'panel',
+              sessionId,
+              files,
+              index: panelIndex,
+              t,
+              onSelect: (next) => setPanelIndex(next),
+              onRefresh: () => refreshRef.current(),
+              onClose: () => setPanelOpen(false),
+            })
+          : null,
+      );
     }
+
+    /** Classify one unified-diff line for coloring. */
+    function diffKind(line) {
+      if (line.startsWith('@@')) return 'hunk';
+      if (
+        line.startsWith('+++') ||
+        line.startsWith('---') ||
+        line.startsWith('diff --git') ||
+        line.startsWith('index ')
+      ) {
+        return 'meta';
+      }
+      if (line.startsWith('+')) return 'add';
+      if (line.startsWith('-')) return 'del';
+      return 'ctx';
+    }
+
+    /**
+     * The badge's click target while a turn still runs: DSH records no summary
+     * before stopping, so the Host half computes the turn's diff from git and
+     * this panel shows one file at a time.
+     */
+    function LiveDiffPanel(props) {
+      const { sessionId, files, index, t, onSelect, onRefresh, onClose } = props;
+      const list = Array.isArray(files) ? files : [];
+      const safeIndex = list.length === 0 ? 0 : Math.max(0, Math.min(index, list.length - 1));
+      const active = list[safeIndex];
+      const [diff, setDiff] = React.useState('');
+      const [note, setNote] = React.useState('loading');
+      const [truncated, setTruncated] = React.useState(false);
+
+      React.useEffect(() => {
+        if (active === undefined) return undefined;
+        let cancelled = false;
+        setNote('loading');
+        (async () => {
+          try {
+            const path = typeof active.path === 'string' && active.path !== '' ? active.path : String(active.display ?? '');
+            const response = await fetch(
+              `${LIVE_DIFF_ROUTE}?session=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
+              { cache: 'no-store' },
+            );
+            const data = await response.json().catch(() => null);
+            if (cancelled) return;
+            if (!response.ok || data === null) {
+              setNote('failed');
+              return;
+            }
+            const text = typeof data.diff === 'string' ? data.diff : '';
+            setDiff(text);
+            setTruncated(data.truncated === true);
+            setNote(text === '' ? 'empty' : 'ready');
+          } catch {
+            if (!cancelled) setNote('failed');
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+      }, [sessionId, active]);
+
+      const rows = list.map((file, position) => {
+        const name = (typeof file.display === 'string' ? file.display : file.path) || '';
+        const counts =
+          file.binary === true
+            ? h('span', { className: 'dsh-cl-file-note' }, t('diff.binary'))
+            : file.oversized === true
+              ? h('span', { className: 'dsh-cl-file-note' }, t('diff.oversized'))
+              : [
+                  h('span', { key: 'a', className: 'dsh-cl-file-add' }, `+${Number.isFinite(file.added) ? file.added : 0}`),
+                  h('span', { key: 'd', className: 'dsh-cl-file-del' }, `-${Number.isFinite(file.deleted) ? file.deleted : 0}`),
+                ];
+        return h(
+          'button',
+          {
+            key: `${position}:${name}`,
+            type: 'button',
+            className: 'dsh-cl-live-file',
+            'data-active': position === safeIndex ? 'true' : 'false',
+            title: name,
+            onClick: () => onSelect(position),
+          },
+          h('span', { className: 'dsh-cl-file-name' }, name),
+          h('span', { className: 'dsh-cl-file-counts' }, counts),
+        );
+      });
+
+      const body =
+        note === 'ready'
+          ? diff
+              .split('\n')
+              .map((line, position) =>
+                h(
+                  'div',
+                  { key: position, className: 'dsh-cl-live-line', 'data-kind': diffKind(line) },
+                  line === '' ? ' ' : line,
+                ),
+              )
+          : h(
+              'div',
+              { className: 'dsh-cl-live-note' },
+              t(note === 'loading' ? 'diff.loading' : note === 'empty' ? 'diff.empty' : 'diff.failed'),
+            );
+
+      return h(
+        'div',
+        {
+          className: 'dsh-cl-live-layer',
+          onClick: (event) => {
+            if (event.target === event.currentTarget) onClose();
+          },
+        },
+        h(
+          'div',
+          { className: 'dsh-cl-live-card', role: 'dialog', 'aria-label': t('diff.liveTitle') },
+          h(
+            'div',
+            { className: 'dsh-cl-live-head' },
+            h(
+              'span',
+              { className: 'dsh-cl-live-title' },
+              `${list.length} ${list.length === 1 ? t('diff.filesChangedOne') : t('diff.filesChangedMany')} · ${t('diff.live')}`,
+            ),
+            h('button', { type: 'button', className: 'dsh-cl-live-btn', onClick: onRefresh }, t('diff.refresh')),
+            h('button', { type: 'button', className: 'dsh-cl-live-btn', onClick: onClose }, t('diff.closePanel')),
+          ),
+          h(
+            'div',
+            { className: 'dsh-cl-live-body' },
+            h('div', { className: 'dsh-cl-live-files' }, rows),
+            h('div', { className: 'dsh-cl-live-pane' }, body, truncated ? h('div', { className: 'dsh-cl-live-note' }, t('diff.truncatedNote')) : null),
+          ),
+        ),
+      );
+    }
+
+    /**
+     * The live change list as a right-Sidebar tab body: the badge opens this
+     * while a turn runs, so the list docks next to the conversation instead of
+     * covering it.
+     */
+    function SidebarLiveChanges(props) {
+      const sessionId = props.sessionId;
+      const t = typeof props.t === 'function' ? props.t : (key) => key;
+      const [changes, setChanges] = React.useState(null);
+      const [running, setRunning] = React.useState(false);
+      const [activePath, setActivePath] = React.useState(null);
+      const [diff, setDiff] = React.useState('');
+      const [note, setNote] = React.useState('loading');
+      const [truncated, setTruncated] = React.useState(false);
+      const [tick, setTick] = React.useState(0);
+
+      React.useEffect(() => {
+        if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+        let cancelled = false;
+        const load = async () => {
+          try {
+            const response = await fetch(`${CHANGES_ROUTE}?session=${encodeURIComponent(sessionId)}`, { cache: 'no-store' });
+            if (!response.ok) return;
+            const data = await response.json();
+            if (cancelled) return;
+            setChanges(data && data.changes ? data.changes : null);
+            setRunning(data !== null && data.running === true);
+          } catch {
+            /* the Host route is unavailable (older Host half) */
+          }
+        };
+        void load();
+        const timer = window.setInterval(() => {
+          void load();
+        }, running ? CHANGES_POLL_MS : CHANGES_IDLE_POLL_MS);
+        return () => {
+          cancelled = true;
+          window.clearInterval(timer);
+        };
+      }, [sessionId, running, tick]);
+
+      const files = Array.isArray(changes && changes.files) ? changes.files : [];
+      const pathOf = (file) => (typeof file.path === 'string' && file.path !== '' ? file.path : String(file.display ?? ''));
+
+      React.useEffect(() => {
+        if (files.length === 0) {
+          setActivePath(null);
+          return;
+        }
+        if (files.some((file) => pathOf(file) === activePath)) return;
+        setActivePath(pathOf(files[0]));
+      }, [changes, activePath]);
+
+      React.useEffect(() => {
+        if (activePath === null || typeof sessionId !== 'string' || sessionId === '') {
+          setNote('empty');
+          setDiff('');
+          return undefined;
+        }
+        let cancelled = false;
+        setNote('loading');
+        (async () => {
+          try {
+            const response = await fetch(
+              `${LIVE_DIFF_ROUTE}?session=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(activePath)}`,
+              { cache: 'no-store' },
+            );
+            const data = await response.json().catch(() => null);
+            if (cancelled) return;
+            if (!response.ok || data === null) {
+              setNote('failed');
+              return;
+            }
+            const text = typeof data.diff === 'string' ? data.diff : '';
+            setDiff(text);
+            setTruncated(data.truncated === true);
+            setNote(text === '' ? 'empty' : 'ready');
+          } catch {
+            if (!cancelled) setNote('failed');
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+      }, [sessionId, activePath, changes]);
+
+      const total = changes && Number.isFinite(changes.total) ? changes.total : files.length;
+      const fileLabel = total === 1 ? t('diff.filesChangedOne') : t('diff.filesChangedMany');
+      const rows = files.map((file, position) => {
+        const path = pathOf(file);
+        const name = typeof file.display === 'string' ? file.display : path;
+        const counts =
+          file.binary === true
+            ? h('span', { className: 'dsh-cl-file-note' }, t('diff.binary'))
+            : file.oversized === true
+              ? h('span', { className: 'dsh-cl-file-note' }, t('diff.oversized'))
+              : [
+                  h('span', { key: 'a', className: 'dsh-cl-file-add' }, `+${Number.isFinite(file.added) ? file.added : 0}`),
+                  h('span', { key: 'd', className: 'dsh-cl-file-del' }, `-${Number.isFinite(file.deleted) ? file.deleted : 0}`),
+                ];
+        return h(
+          'button',
+          {
+            key: `${position}:${path}`,
+            type: 'button',
+            className: 'dsh-cl-live-file',
+            'data-active': path === activePath ? 'true' : 'false',
+            title: name,
+            onClick: () => setActivePath(path),
+          },
+          h('span', { className: 'dsh-cl-file-name' }, name),
+          h('span', { className: 'dsh-cl-file-counts' }, counts),
+        );
+      });
+
+      const pane =
+        note === 'ready'
+          ? diff
+              .split('\n')
+              .map((line, position) =>
+                h(
+                  'div',
+                  { key: position, className: 'dsh-cl-live-line', 'data-kind': diffKind(line) },
+                  line === '' ? ' ' : line,
+                ),
+              )
+          : h(
+              'div',
+              { className: 'dsh-cl-live-note' },
+              t(note === 'loading' ? 'diff.loading' : note === 'empty' ? 'diff.empty' : 'diff.failed'),
+            );
+
+      return h(
+        'div',
+        { className: 'dsh-cl-side' },
+        h(
+          'div',
+          { className: 'dsh-cl-side-head' },
+          running ? h('span', { className: 'dsh-cl-side-dot' }) : null,
+          h(
+            'span',
+            { className: 'dsh-cl-live-title' },
+            changes === null
+              ? t('diff.liveTitle')
+              : `${total} ${fileLabel} · ${running ? t('diff.live') : t('diff.ended')}`,
+          ),
+          h(
+            'button',
+            { type: 'button', className: 'dsh-cl-live-btn', onClick: () => setTick((value) => value + 1) },
+            t('diff.refresh'),
+          ),
+        ),
+        changes === null
+          ? h('div', { className: 'dsh-cl-live-note', style: { padding: '10px' } }, t('diff.empty'))
+          : h(
+              React.Fragment,
+              null,
+              h('div', { className: 'dsh-cl-side-files' }, rows),
+              h(
+                'div',
+                { className: 'dsh-cl-side-pane' },
+                pane,
+                truncated ? h('div', { className: 'dsh-cl-live-note' }, t('diff.truncatedNote')) : null,
+              ),
+            ),
+      );
+    }
+
 
     // ------------------------------------------------------------------
     // File context menu (right-click a file link in the conversation).
@@ -1792,6 +2255,8 @@ window.__ModuleLoader__.load({
       const useInput = typeof props.useInput === 'function' ? props.useInput : () => '';
       const inputActions = props.inputActions;
       const list = React.useSyncExternalStore(subscribeAnnotations, annotationSnapshot);
+      const settings = React.useSyncExternalStore(subscribeSettings, getSettings);
+      const enabled = settings.annotations !== false;
       const [open, setOpen] = React.useState(false);
       const draft = useInput((state) => (state && typeof state.draft === 'string' ? state.draft : ''));
       const draftRef = React.useRef(draft);
@@ -1816,6 +2281,12 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('dsh-interaction-optimize:annotations-open', openList);
       }, []);
 
+      // Switching the feature off retires whatever was still pending, so the
+      // composer never keeps a stray annotation token.
+      React.useEffect(() => {
+        if (!enabled) clearAnnotations();
+      }, [enabled]);
+
       // Pending comments must be sendable on their own: keep one invisible
       // separator in the draft so the composer's send control stays enabled,
       // and remove it again once the list empties.
@@ -1839,6 +2310,7 @@ window.__ModuleLoader__.load({
       }, [list.length, inputActions]);
 
       React.useEffect(() => {
+        if (!enabled) return undefined;
         // Two send paths:
         //  - draft has text: append the block to the draft and let the native
         //    send continue;
@@ -1957,9 +2429,9 @@ window.__ModuleLoader__.load({
           document.removeEventListener('keydown', onKeyDown, true);
           document.removeEventListener('click', onClick, true);
         };
-      }, [inputActions, props.submitAnnotations]);
+      }, [enabled, inputActions, props.submitAnnotations]);
 
-      if (list.length === 0) return null;
+      if (!enabled || list.length === 0) return null;
 
       const editAnnotation = (note, event) => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -2237,6 +2709,18 @@ window.__ModuleLoader__.load({
           }),
         ),
         settingRow(
+          'annotations',
+          t('settings.annotations.title'),
+          t('settings.annotations.desc'),
+          h('input', {
+            type: 'checkbox',
+            className: 'dsh-tct-checkbox',
+            checked: settings.annotations,
+            'aria-label': t('settings.annotations.title'),
+            onChange: (event) => updateSettings({ annotations: event.target.checked }),
+          }),
+        ),
+        settingRow(
           'fileMenu',
           t('settings.fileMenu.title'),
           t('settings.fileMenu.desc'),
@@ -2398,6 +2882,40 @@ window.__ModuleLoader__.load({
         ctx.effect(() => ctx.locale.register(NS, 'zh', ZH), 'dsh-interaction-optimize: zh dictionary');
         ctx.effect(() => ctx.locale.register(NS, 'en', EN), 'dsh-interaction-optimize: en dictionary');
 
+        // The live change list is its own right-Sidebar tab type, so the badge
+        // can dock it beside the conversation instead of covering it.
+        ctx.inject(['sidebarRightTabs'], (scope) => {
+          try {
+          scope.effect(
+            () =>
+              scope.sidebarRightTabs.register({
+                id: LIVE_TAB_ID,
+                kind: LIVE_KIND,
+                priority: 'extension',
+                title: () => scope.locale.bind(NS)('diff.liveTitle'),
+              }),
+            'dsh-interaction-optimize: live changes tab type',
+          );
+          scope.effect(
+            () =>
+              scope.slots.inject('sidebar.right.pane.tab', () =>
+                scope.slots.register(
+                  { name: 'sidebar.right.pane.tab', key: LIVE_TAB_ID, locale: NS, inject: () => ({}) },
+                  SidebarLiveChanges,
+                ),
+              ),
+            'dsh-interaction-optimize: live changes tab body',
+          );
+          } catch (error) {
+            // The docked list is optional: a composition that cannot host it
+            // must keep the toast, badge, and annotations working.
+            console.warn(
+              'dsh-interaction-optimize: live changes tab unavailable',
+              error instanceof Error ? error.message : error,
+            );
+          }
+        });
+
         /** Resolve the live event source of the session the main view retains. */
         const getSessionEventSource = (sessionId) => {
           const sessions = ctx.get('sessions');
@@ -2406,18 +2924,45 @@ window.__ModuleLoader__.load({
           return binding && binding.eventSource ? binding.eventSource : undefined;
         };
 
-        ctx.slots.inject('shell.overlay', () =>
-          ctx.slots.register(
+        ctx.slots.inject('shell.overlay', () => {
+          const overlayDispose = ctx.slots.register(
             {
               name: 'shell.overlay',
               id: NS,
               order: 40,
               locale: NS,
-              inject: () => ({ getSessionEventSource }),
+              inject: () => ({
+                // Land on the conversation a finished turn belongs to: focus the
+                // window, bring that Session into the main view, and scroll it
+                // to the newest message.
+                openConversation: (sessionId) => {
+                  try {
+                    window.focus();
+                  } catch {
+                    /* the window may refuse focus */
+                  }
+                  const workspace = ctx.get('uiWorkspace');
+                  if (
+                    workspace &&
+                    typeof workspace.openSession === 'function' &&
+                    typeof sessionId === 'string' &&
+                    sessionId !== ''
+                  ) {
+                    try {
+                      workspace.openSession(sessionId);
+                    } catch {
+                      /* the Session may have been closed since the turn */
+                    }
+                  }
+                  revealConversation();
+                  return true;
+                },
+              }),
             },
             TurnCompleteToast,
-          ),
-        );
+          );
+          return overlayDispose;
+        });
 
         ctx.slots.inject('plugins.row.config', () =>
           ctx.slots.register(
@@ -2441,6 +2986,17 @@ window.__ModuleLoader__.load({
               order: 12,
               locale: NS,
               inject: () => ({
+                getSessionEventSource,
+                openLiveChanges: (sessionId) => {
+                  const sidebar = ctx.get('sidebarRight');
+                  if (!sidebar || typeof sidebar.openTab !== 'function') return false;
+                  try {
+                    sidebar.openTab(LIVE_KIND);
+                    return true;
+                  } catch {
+                    return false;
+                  }
+                },
                 openChangesReview: (sessionId, seq, turn, index) => {
                   const sidebar = ctx.get('sidebarRight');
                   if (!sidebar || typeof sidebar.openResource !== 'function') return false;
@@ -2486,11 +3042,40 @@ window.__ModuleLoader__.load({
           ),
         );
 
+        /**
+         * Install one DOM feature only while its settings switch is on, and
+         * re-sync the moment the switch flips.
+         */
+        const installWhenEnabled = (readEnabled, factory, label) => {
+          ctx.effect(() => {
+            let dispose = () => {};
+            let installed = false;
+            const sync = () => {
+              const next = readEnabled() !== false;
+              if (next === installed) return;
+              installed = next;
+              dispose();
+              dispose = next ? factory() : () => {};
+            };
+            sync();
+            const unsubscribe = subscribeSettings(sync);
+            return () => {
+              unsubscribe();
+              dispose();
+            };
+          }, label);
+        };
+
         // Select-text toolbar and its annotation editor.
-        ctx.effect(() => installSelectionToolbar(ctx.locale.bind(NS)), 'dsh-interaction-optimize: selection annotations');
+        installWhenEnabled(
+          () => getSettings().annotations,
+          () => installSelectionToolbar(ctx.locale.bind(NS)),
+          'dsh-interaction-optimize: selection annotations',
+        );
 
         // Collapse sent annotation blocks into a `N 条注释` pill.
-        ctx.effect(
+        installWhenEnabled(
+          () => getSettings().annotations,
           () => installSentAnnotationRenderer(ctx.locale.bind(NS)),
           'dsh-interaction-optimize: sent annotations',
         );

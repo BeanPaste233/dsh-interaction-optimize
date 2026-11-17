@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本轮改动一目了然、结束有提醒、能直接批注」的交互带进 DSH。
 
-1. **输入框上方的增删小方块**：显示本轮代码改动 `+新增` / `−删除` 以及改动文件数，回合运行中实时刷新（数据来自 Host 的 `workspace/changes` 记录）。
+1. **输入框上方的增删小方块**：显示本轮代码改动 `+新增` / `−删除` 以及改动文件数，回合运行中实时刷新（Host 在 `turn/start` 留 git 基线现算；回合结束后改用 DSH 的 `workspace/changes` 记录）。
 2. **回合完成提示框**：屏幕右下角卡片，标题说明结局（完成 / 失败 / 达上限），正文带上**本次回复的一小段内容**。
 3. **系统通知**：窗口不可见/最小化时才用系统通知；窗口可见（即使没聚焦）一律用应用内卡片。系统通知的外观由操作系统决定，插件无法自定义。
 4. **提示音**：内置两声短促上行音，也可以上传自己的音频文件。
@@ -15,7 +15,8 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
-| 输入框上方增删统计 | 开 | 输入框上方的 `+N` / `−M` / 文件数小方块 |
+| 输入框上方增删统计 | 开 | 输入框上方的 `+N` / `−M` / 文件数小方块，点击在右侧栏看 diff |
+| 划词注释 | 开 | 选中对话文字加评论、发送时随消息带给模型；关掉后不显示划词菜单、待发送胶囊与已发送折叠胶囊 |
 | 文件右键菜单 | 开 | 对话里右键文件链接的菜单（打开 / 显示位置 / 其他应用） |
 | 应用内提示框 | 开 | 右下角卡片（含回复摘录），旁边有「预览提示框」按钮 |
 | 系统通知 | 仅窗口不可见时 | `关闭` / `仅窗口不可见时` / `每次完成都弹出`；需要点「启用系统通知」授权一次 |
@@ -32,12 +33,18 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 
 - 输入框上方**居中**显示一枚圆角胶囊：`N 个文件已更改 +A -D`（文件名数量、绿色新增、红色删除，千分位分隔）。
 - **悬停胶囊**弹出文件清单（每个文件的 `+A -D`，可滚动，最多 30 个；二进制/过大文件标注说明），清单里的文件也可直接点击。
-- **点击胶囊**打开右侧栏的「本轮改动」审批视图（与回合结束卡片同一个 `changes-review` 面板，自动选中第一个文件）；点击清单里的某一行则直接定位到该文件的 diff。
+- **点击胶囊**在**右侧栏**打开改动视图，自动选中第一个文件；点击清单里的某一行则直接定位到该文件：
+  - **回合进行中**：打开插件注册的右侧栏标签「本轮改动」（上方文件清单、下方该文件的 unified diff，运行中带呼吸点、可刷新，回合结束后也可继续查看这一轮）；
+  - **回合结束后**：仍走右侧栏的原生 `changes-review`「本轮改动」视图。
+  - 若当前组合里没有右侧栏（极少见），自动退回插件内的浮层面板。
 - 宽度与位置对齐输入框卡片（复用 DSH 的 composer 宽度变量与 dock 内边距），也可在配置页关掉整块统计。
-- 数据源：Host 记录每条 `workspace/changes` 事件对应的 summary（`workspaceChanges.summary(sessionId, seq)`），Client 通过 `GET /dsh-interaction-optimize/changes?session=…` 轮询：
-  - 回合运行中每 1.2 秒刷新一次；空闲时每 5 秒兜底刷新，保证回合刚结束才落盘的记录也能显示；
-  - 新回合开始（Host 收到 `turn/start`）时清空上一条，避免显示上一轮的统计。
+- 数据源分两层：
+  - **回合进行中（实时）**：DSH 只在「回合即将结束」时才记录 `workspace/changes`，所以插件自己在 `turn/start` 用 `git stash create`（不改变工作区、不动 stash 列表）留一份基线，之后直接对比工作区算增量；未跟踪的新文件按新增行统计。
+  - **回合结束后**：Host 记录 `workspace/changes` 对应的 summary（`workspaceChanges.summary(sessionId, seq)`），优先于实时数据。
+- Client 通过 `GET /dsh-interaction-optimize/changes?session=…` 刷新：回合运行中每 1.2 秒一次、空闲 5 秒兜底；另外订阅会话 `eventSource`，在 `tool/result` / `turn/start` / `turn/end` 后立即补拉一次，所以文件一改就能看到。
+- 实时 diff 由 `GET /dsh-interaction-optimize/live-diff?session=…&path=…` 提供（单文件 ≤ 200 KB，超出截断）。
 - 只统计文件改动（含二进制/超大文件的文件数，行数计 0）；没有改动时不显示。
+- 实时模式依赖 git：**非 git 目录**下没有基线，胶囊仍在回合结束后按 DSH 记录显示。
 
 ## 划词注释（Codex 风格）
 
@@ -65,15 +72,16 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 
 ## 完成提示
 
-- 听当前主视图会话的持久化 `turn/end` 事件，只在三种结局提醒：
+- Host 监听**所有会话**的持久化 `turn/end`（后台会话也算），只在三种结局提醒：
   - `completed` → 「本轮执行完成」（绿色对勾）+ 本次回复开头一小段
   - `error` → 「本轮执行失败」（红色叉号）+ 错误信息
   - `max-tokens` → 「本轮输出已达上限」（黄色感叹号）+ 本次回复开头一小段
 - `aborted`（手动停止）、`interrupted`、`blocked` 不提醒。
-- 兜底通道：拿不到事件源时用会话状态 `running` 由真变假提醒「本轮执行完成」。
+- 数据通道：Host 把每条完成的回合写进内存队列，Client 每秒拉取 `GET /dsh-interaction-optimize/completions?after=<id>`；因此切到别的会话、甚至页面上不是这条对话时也能收到提醒，点击卡片会跳回对应会话。
 - 提示框按「显示时长」停留后消失；悬停暂停计时；可手动关闭；页面切到后台时不倒计时。
+- **点击提示框**（或点击系统通知）会回到这条回合所在的对话：聚焦窗口、必要时切回该会话，并把对话滚到最新消息；预览提示框只关闭不跳转。
 - 回复摘录：本轮最后一条 `assistant/message` 的 `type:'text'` 块，压缩空白后截取 160 字符；回合开始时清空。
-- 系统通知与提示框共用同一个事件与同样的标题/正文；通知本身静音（声音统一由提示音负责），点击通知会聚焦窗口。
+- 系统通知与提示框共用同一个事件与同样的标题/正文；通知本身静音（声音统一由提示音负责），点击通知同样回到该对话并聚焦窗口。
 - **系统通知的外观由 Windows/Electron 决定，插件改不了**；所以窗口可见（哪怕没聚焦）时不再弹系统通知，只显示应用内卡片。想彻底不要系统通知，把配置里的「系统通知」设为「关闭」。
 
 ### 与 dsh-pet 通知的关系
@@ -85,9 +93,9 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 | 部分 | 说明 |
 | --- | --- |
 | 增删小方块 | 注册到 `conversation.input.dock`（输入框上方通栏），`id` 为 `dsh-interaction-optimize-diff`，session 作用域拿到 `sessionId` 与 `useSessionStatus`。 |
-| 点击胶囊 | `ctx.get('sidebarRight').openResource('dsh-resource://changes-review/session/<session>/<seq>/<turn>', { params: { index: 0 } })`。 |
-| 数据来源 | Host 监听 `session/event` 的 `workspace/changes`，调用 `ctx.get('workspaceChanges').summary()` 缓存；`turn/start` 清空。 |
-| Host 路由 | `/dsh-interaction-optimize` 前缀：`GET/PUT/DELETE /sound`、`GET /changes?session=…`、`POST /open`、`GET /apps?path=…`。 |
+| 点击胶囊 | 实时（回合进行中）：`ctx.get('sidebarRight').openTab('dsh-interaction-optimize-live')`，该标签类型注册在 `ctx.sidebarRightTabs`、正文注册在 `sidebar.right.pane.tab`（key 为 `dsh-interaction-optimize/live-changes`）；没有右侧栏时退回内联 `LiveDiffPanel`。回合结束后：`openResource('dsh-resource://changes-review/session/<session>/<seq>/<turn>')`。 |
+| 数据来源 | Host 监听 `session/event`：`turn/start` 时留 git 基线（`git stash create` → 回退 HEAD，另记未跟踪文件集），`workspace/changes` 时缓存 `ctx.get('workspaceChanges').summary()`；实时 summary 用 `git diff --numstat -z` 现算并缓存 450 ms。 |
+| Host 路由 | `/dsh-interaction-optimize` 前缀：`GET/PUT/DELETE /sound`、`GET /changes?session=…`、`GET /live-diff?session=…&path=…`、`POST /open`、`GET /apps?path=…`。 |
 | 文件打开 | Host 优先走 `sessionController.openWorkspacePath`（原生、可显示窗口）；应用列表走注册表 `OpenWithList` + `App Paths`。 |
 | 完成提示 | `shell.overlay` 槽位，`position: fixed; right: 20px; bottom: 20px`，浮层点击穿透。 |
 | 系统通知 | 页面内 `new Notification(...)`（`silent: true`，点击聚焦窗口）；权限从配置页请求。 |
@@ -118,7 +126,6 @@ dsh-interaction-optimize/
 ## 已知限制
 
 - 增删统计只覆盖 Host 记录到的文件改动；没有 git 基线时按文件工具的实际写入计数。
-- 只提醒「主视图当前打开的会话」；后台会话完成时不提醒。
 - 系统级通知沿用 DSH 自己的行为。
 - 自定义音频最多 4 MB；浏览器后台播放音量可能被系统/浏览器压低。
 - 兜底通道无法区分「完成」与「手动停止」，正常路径（事件源可用）下不会用到它。
