@@ -1,6 +1,6 @@
 {
   "name": "dsh-interaction-optimize",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "DSH interaction polish: diff badge above the composer, completion toast with reply excerpt and custom sound, select-text annotations with a \"N comments\" pill, and a right-click file menu (open, reveal, open with another app).",
   "type": "module",
   "icon": "icon.svg",

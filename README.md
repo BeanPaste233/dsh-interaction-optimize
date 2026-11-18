@@ -104,6 +104,7 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 | 当前会话 | 根级标准 Hook `useSessions` 找到 `retainedBy.mainView > 0` 的会话。 |
 | 完成信号 | Host 记录所有会话的 `turn/end`（含回复摘录）到内存队列，Client 每秒用游标拉取 `GET /completions?after=…`，因此切走会话也能提醒。 |
 | 配置界面 | 注册到 `plugins.row.config`，键位 `dsh-interaction-optimize#dsh-interaction-optimize`。 |
+| 配色 | 全部使用 DSH 主题令牌（`--dsw-alias-*`、`--dsw-specific-input-major`、`--dsw-menu-surface-fill`、`--dsw-shadow-lv*`），深浅色模式随宿主自动切换，无写死颜色。 |
 | 文案 | `ctx.locale` 命名空间 `dsh-interaction-optimize`，中英双字典。 |
 
 ## 目录
