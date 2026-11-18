@@ -842,83 +842,150 @@ window.__ModuleLoader__.load({
         popover = el;
       };
 
-      /** Lowest common ancestor of two elements. */
-      const commonAncestor = (left, right) => {
-        const ancestors = new Set();
-        for (let el = right; el !== null; el = el.parentElement) ancestors.add(el);
-        for (let el = left; el !== null; el = el.parentElement) {
-          if (ancestors.has(el)) return el;
+      /** Every text node under one root, in document order. */
+      const textNodesOf = (root) => {
+        const nodes = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        return nodes;
+      };
+
+      /** Map an absolute offset in the concatenated text back to a DOM point. */
+      const pointAt = (nodes, absolute) => {
+        let cursor = 0;
+        for (const node of nodes) {
+          const length = (node.nodeValue || '').length;
+          if (absolute <= cursor + length) return { node, offset: absolute - cursor };
+          cursor += length;
         }
         return undefined;
       };
 
       /**
-       * Collapse one rendered block, whatever DOM shape Markdown produced for
-       * it: the markers are located as text, the whole range between them is
-       * removed with a DOM Range, and the pill takes the start marker's place.
+       * Collapse the block inside one message node. The markers are located in
+       * the node's concatenated text, so a marker the renderer split across
+       * several text nodes still resolves; the covered range is then removed
+       * with a DOM Range and the pill takes the start marker's place.
+       * @param root - one rendered message node.
        * @returns whether a block was collapsed.
        */
-      const collapseOne = () => {
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        let startNode;
-        let endNode;
-        let startIndex = -1;
-        let endIndex = -1;
-        while (walker.nextNode()) {
-          const node = walker.currentNode;
-          const value = node.nodeValue || '';
-          if (startNode === undefined) {
-            const at = value.indexOf(ANNO_START);
-            if (at >= 0) {
-              startNode = node;
-              startIndex = at;
-            }
-            continue;
-          }
-          const at = value.indexOf(ANNO_END);
-          if (at >= 0) {
-            endNode = node;
-            endIndex = at;
-            break;
-          }
-        }
-        if (startNode === undefined || endNode === undefined) return false;
-        const startEl = startNode.parentElement;
-        if (startEl === null) return false;
-        const common = commonAncestor(startEl, endNode.parentElement ?? startEl);
-        const parsed = parseSentAnnotations(common === undefined ? '' : common.textContent || '');
+      const collapseIn = (root) => {
+        if (root.querySelector('.dsh-cl-sent-anno') !== null) return false;
+        const nodes = textNodesOf(root);
+        if (nodes.length === 0) return false;
+        const full = nodes.map((node) => node.nodeValue || '').join('');
+        const start = full.indexOf(ANNO_START);
+        if (start < 0) return false;
+        const end = full.indexOf(ANNO_END, start + ANNO_START.length);
+        if (end < 0) return false;
+        const parsed = parseSentAnnotations(full.slice(start, end + ANNO_END.length));
         if (parsed === undefined) return false;
+        const from = pointAt(nodes, start);
+        const to = pointAt(nodes, end + ANNO_END.length);
+        if (from === undefined || to === undefined) return false;
+        const host = from.node.parentElement;
+        if (host === null) return false;
         const range = document.createRange();
-        range.setStart(startNode, startIndex);
-        range.setEnd(endNode, endIndex + ANNO_END.length);
+        range.setStart(from.node, from.offset);
+        range.setEnd(to.node, to.offset);
         range.deleteContents();
         const pill = document.createElement('button');
         pill.type = 'button';
         pill.className = 'dsh-cl-sent-anno';
-        pill.textContent = `${parsed.notes.length} ${t('anno.count')}`;
+        pill.textContent = parsed.notes.length + ' ' + t('anno.count');
         pill.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
           openPopover(pill, parsed.notes);
         });
-        startEl.appendChild(pill);
+        host.appendChild(pill);
         return true;
+      };
+
+      /** Message-shaped nodes that hold a whole block, innermost first. */
+      const blockRoots = () => {
+        const roots = new Set();
+        for (const selector of ['[data-chat-node-key]', '[data-chat-flow-key]']) {
+          for (const element of document.querySelectorAll(selector)) {
+            if (element.closest('[data-composer-card], [contenteditable="true"], textarea, input') !== null) continue;
+            const text = element.textContent || '';
+            if (text.includes(ANNO_START) && text.includes(ANNO_END)) roots.add(element);
+          }
+        }
+        if (roots.size > 0) return roots;
+        // A composition without those attributes: take the innermost element
+        // whose text holds both markers.
+        for (const element of document.body.querySelectorAll('*')) {
+          const text = element.textContent || '';
+          if (!text.includes(ANNO_START) || !text.includes(ANNO_END)) continue;
+          let nested = false;
+          for (const child of element.children) {
+            const childText = child.textContent || '';
+            if (childText.includes(ANNO_START) && childText.includes(ANNO_END)) {
+              nested = true;
+              break;
+            }
+          }
+          if (nested) continue;
+          roots.add(element);
+          break;
+        }
+        return roots;
+      };
+
+      /** Temporary on-screen diagnostic: only drawn when a block fails to fold. */
+      const debugBadge = (text) => {
+        let badge = document.getElementById('dsh-cl-anno-debug');
+        if (badge === null) {
+          badge = document.createElement('div');
+          badge.id = 'dsh-cl-anno-debug';
+          badge.style.cssText =
+            'position:fixed;left:8px;bottom:8px;z-index:2147483647;max-width:min(720px,calc(100vw - 16px));padding:4px 8px;border-radius:6px;background:#b00020;color:#fff;font:11px/15px ui-monospace,monospace;white-space:pre-wrap';
+          document.body.appendChild(badge);
+        }
+        badge.textContent = text;
+      };
+      const clearDebugBadge = () => {
+        document.getElementById('dsh-cl-anno-debug')?.remove();
       };
 
       const scan = () => {
         raf = 0;
-        for (let index = 0; index < 20; index += 1) {
-          if (!collapseOne()) break;
+        const bodyText = document.body.textContent || '';
+        if (!bodyText.includes(ANNO_START) && !bodyText.includes(ANNO_END)) {
+          clearDebugBadge();
+          return;
         }
+        const roots = blockRoots();
+        if (roots.size === 0) {
+          debugBadge('anno: markers in DOM but no candidate node (' + ANNO_START.length + ')');
+          return;
+        }
+        for (const root of roots) {
+          if (collapseIn(root)) {
+            clearDebugBadge();
+            return;
+          }
+        }
+        const details = [...roots]
+          .map((root) => {
+            const text = root.textContent || '';
+            const tag = root.getAttribute('data-chat-node-key') || root.getAttribute('data-chat-flow-key') || root.tagName;
+            const parsed = parseSentAnnotations(text) !== undefined;
+            return tag + (text.includes(ANNO_START) ? ' S' : ' -') + (text.includes(ANNO_END) ? 'E' : '-') + (parsed ? ' P' : ' -');
+          })
+          .join(' | ');
+        debugBadge('anno: found ' + roots.size + ' root(s), none collapsed: ' + details);
       };
-
       const schedule = () => {
         if (raf !== 0) return;
         raf = window.requestAnimationFrame(scan);
       };
 
       const observer = new MutationObserver(schedule);
-      observer.observe(document.body, { childList: true, subtree: true });
+      // `characterData` matters: a renderer may rewrite the text of an existing
+      // node instead of replacing the node, and only that record reports it.
+      observer.observe(document.body, { childList: true, characterData: true, subtree: true });
       const onDocumentClick = (event) => {
         if (popover === undefined) return;
         if (popover.contains(event.target)) return;
@@ -929,9 +996,14 @@ window.__ModuleLoader__.load({
       document.addEventListener('click', onDocumentClick);
       window.addEventListener('scroll', onScroll, true);
       schedule();
+      // A message painted before this installer ran still needs one pass once
+      // the list has settled; the observer cannot see a subtree that already
+      // existed at observe() time.
+      const lateScans = [window.setTimeout(schedule, 600), window.setTimeout(schedule, 2500)];
 
       return () => {
         observer.disconnect();
+        for (const timer of lateScans) window.clearTimeout(timer);
         if (raf !== 0) window.cancelAnimationFrame(raf);
         document.removeEventListener('click', onDocumentClick);
         window.removeEventListener('scroll', onScroll, true);
