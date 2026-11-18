@@ -861,6 +861,54 @@ window.__ModuleLoader__.load({
         return undefined;
       };
 
+      /** The block's notes as the rendered DOM shows them: quote blocks plus labels. */
+      const notesFromDom = (root, full) => {
+        const start = full.indexOf(ANNO_START);
+        const end = full.indexOf(ANNO_END, start + ANNO_START.length);
+        if (start < 0 || end < 0) return undefined;
+        const inner = full.slice(start + ANNO_START.length, end);
+        const quotes = Array.from(root.querySelectorAll('blockquote'))
+          .map((element) => (element.textContent || '').trim())
+          .filter((text) => text !== '');
+        const label = '注释：';
+        const comments = [];
+        let rest = inner;
+        while (rest !== '') {
+          const at = rest.indexOf(label);
+          if (at < 0) break;
+          let after = rest.slice(at + label.length);
+          const nextQuote = quotes[comments.length + 1];
+          if (nextQuote !== undefined) {
+            const cut = after.indexOf(nextQuote);
+            if (cut >= 0) after = after.slice(0, cut);
+          }
+          comments.push(after.trim());
+          rest = after;
+        }
+        if (comments.length === 0) {
+          return quotes.length === 0 ? undefined : quotes.map((quote) => ({ quote, comment: '' }));
+        }
+        return comments.map((comment, index) => ({ quote: quotes[index] ?? quotes[0] ?? '', comment }));
+      };
+
+      /** Last resort for a flattened block: one note per comment label. */
+      const looseNotes = (full) => {
+        const start = full.indexOf(ANNO_START);
+        const end = full.indexOf(ANNO_END, start + ANNO_START.length);
+        if (start < 0 || end < 0) return undefined;
+        const parts = full.slice(start + ANNO_START.length, end).split('注释：');
+        if (parts.length === 1) {
+          const quote = parts[0].trim();
+          return quote === '' ? undefined : [{ quote, comment: '' }];
+        }
+        const first = parts[0].trim();
+        const notes = [];
+        for (let index = 1; index < parts.length; index += 1) {
+          notes.push({ quote: index === 1 ? first : '', comment: parts[index].trim() });
+        }
+        return notes;
+      };
+
       /**
        * Collapse the block inside one message node. The markers are located in
        * the node's concatenated text, so a marker the renderer split across
@@ -878,8 +926,12 @@ window.__ModuleLoader__.load({
         if (start < 0) return false;
         const end = full.indexOf(ANNO_END, start + ANNO_START.length);
         if (end < 0) return false;
-        const parsed = parseSentAnnotations(full.slice(start, end + ANNO_END.length));
-        if (parsed === undefined) return false;
+        // The renderer flattens the stored lines, so structure comes from the
+        // rendered quote blocks first, then from the source-shaped text, then
+        // from the comment labels alone.
+        const structured = parseSentAnnotations(full.slice(start, end + ANNO_END.length));
+        const notes = notesFromDom(root, full) ?? (structured === undefined ? undefined : structured.notes) ?? looseNotes(full);
+        if (notes === undefined || notes.length === 0) return false;
         const from = pointAt(nodes, start);
         const to = pointAt(nodes, end + ANNO_END.length);
         if (from === undefined || to === undefined) return false;
@@ -892,11 +944,11 @@ window.__ModuleLoader__.load({
         const pill = document.createElement('button');
         pill.type = 'button';
         pill.className = 'dsh-cl-sent-anno';
-        pill.textContent = parsed.notes.length + ' ' + t('anno.count');
+        pill.textContent = notes.length + ' ' + t('anno.count');
         pill.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
-          openPopover(pill, parsed.notes);
+          openPopover(pill, notes);
         });
         host.appendChild(pill);
         return true;
@@ -971,8 +1023,8 @@ window.__ModuleLoader__.load({
           .map((root) => {
             const text = root.textContent || '';
             const tag = root.getAttribute('data-chat-node-key') || root.getAttribute('data-chat-flow-key') || root.tagName;
-            const parsed = parseSentAnnotations(text) !== undefined;
-            return tag + (text.includes(ANNO_START) ? ' S' : ' -') + (text.includes(ANNO_END) ? 'E' : '-') + (parsed ? ' P' : ' -');
+            const notes = notesFromDom(root, text) ?? looseNotes(text);
+            return tag + (text.includes(ANNO_START) ? ' S' : ' -') + (text.includes(ANNO_END) ? 'E' : '-') + (notes === undefined ? ' -' : ' N' + notes.length);
           })
           .join(' | ');
         debugBadge('anno: found ' + roots.size + ' root(s), none collapsed: ' + details);
