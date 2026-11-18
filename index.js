@@ -16,7 +16,8 @@
  *     `/dsh-interaction-optimize/apps`: native open/reveal through the Host
  *     session controller, plus the extension's registered applications.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { zstdDecompressSync } from 'node:zlib';
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile, spawn } from 'node:child_process';
@@ -568,6 +569,215 @@ function truncateDiff(diff) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Codex threads.
+//
+// A `codex://threads/<id>` link is only an identifier for the model, so this
+// half reads the thread's local rollout file instead. Only user and assistant
+// text is projected: developer context, reasoning and tool payloads stay out.
+// ---------------------------------------------------------------------------------------------
+
+const CODEX_HOME = join(homedir(), '.codex');
+const CODEX_SESSIONS = join(CODEX_HOME, 'sessions');
+const CODEX_ARCHIVE = join(CODEX_HOME, 'archived_sessions');
+const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODEX_THREAD_LINK = /^codex:\/\/threads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+/** How much of one thread a single call may read. */
+const CODEX_DEFAULT_MESSAGES = 20;
+const CODEX_MAX_MESSAGES = 50;
+const CODEX_MAX_CHARS = 8000;
+
+/** The thread id inside a codex:// link or a bare id. */
+function codexThreadId(input) {
+  const text = String(input ?? '').trim();
+  const link = CODEX_THREAD_LINK.exec(text);
+  if (link !== null) return link[1].toLowerCase();
+  if (CODEX_THREAD_ID.test(text)) return text.toLowerCase();
+  return undefined;
+}
+
+/** The rollout file that holds one thread, if this machine has it. */
+function codexThreadFile(id) {
+  const compact = id.replaceAll('-', '');
+  // A UUIDv7 carries its creation time in the leading 48 bits.
+  const ms = Number.parseInt(compact.slice(0, 12), 16);
+  const direct = [];
+  if (Number.isFinite(ms) && ms > 0) {
+    const at = new Date(ms);
+    direct.push(
+      join(
+        CODEX_SESSIONS,
+        String(at.getUTCFullYear()),
+        String(at.getUTCMonth() + 1).padStart(2, '0'),
+        String(at.getUTCDate()).padStart(2, '0'),
+      ),
+    );
+  }
+  direct.push(CODEX_ARCHIVE);
+  for (const dir of direct) {
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    const hit = names.find((name) => name.includes(id) && /\.jsonl(\.zst)?$/.test(name));
+    if (hit !== undefined) return join(dir, hit);
+  }
+  // An imported or clock-skewed thread may sit under another day.
+  const walk = (dir, depth) => {
+    if (depth < 0) return undefined;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return undefined;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.includes(id) && /\.jsonl(\.zst)?$/.test(entry.name)) {
+        return join(dir, entry.name);
+      }
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const hit = walk(join(dir, entry.name), depth - 1);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  };
+  return walk(CODEX_SESSIONS, 3);
+}
+
+/** Read one rollout file and keep only its user and assistant text. */
+function readCodexThread(file) {
+  const bytes = readFileSync(file);
+  const text = (file.endsWith('.zst') ? zstdDecompressSync(bytes) : bytes).toString('utf8');
+  let cwd;
+  let createdAt;
+  const messages = [];
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const payload = record && record.payload;
+    if (record.type === 'session_meta' && payload !== null && typeof payload === 'object') {
+      if (typeof payload.cwd === 'string') cwd = payload.cwd;
+      if (typeof payload.timestamp === 'string') createdAt = payload.timestamp;
+      continue;
+    }
+    if (record.type !== 'response_item' || payload === null || typeof payload !== 'object' || payload.type !== 'message') continue;
+    if (payload.role !== 'user' && payload.role !== 'assistant') continue;
+    let body = '';
+    for (const part of Array.isArray(payload.content) ? payload.content : []) {
+      if (part === null || typeof part !== 'object') continue;
+      if ((part.type === 'input_text' || part.type === 'output_text' || part.type === 'text') && typeof part.text === 'string') {
+        body += (body === '' ? '' : '\n') + part.text;
+      }
+    }
+    const trimmed = body.trim();
+    if (trimmed !== '') messages.push({ role: payload.role, text: trimmed });
+  }
+  return { cwd, createdAt, messages };
+}
+
+/** The canonical value one codex_thread call returns. */
+function codexThreadValue(input, maxMessages) {
+  const id = codexThreadId(input);
+  if (id === undefined) return { ok: false, reason: 'invalid-link' };
+  const file = codexThreadFile(id);
+  if (file === undefined) return { ok: false, id, reason: 'not-found' };
+  let thread;
+  try {
+    thread = readCodexThread(file);
+  } catch {
+    return { ok: false, id, reason: 'unreadable' };
+  }
+  const limit = Number.isFinite(maxMessages)
+    ? Math.min(CODEX_MAX_MESSAGES, Math.max(1, Math.trunc(maxMessages)))
+    : CODEX_DEFAULT_MESSAGES;
+  const messages = thread.messages.slice(-limit);
+  let truncated = thread.messages.length > messages.length;
+  let total = messages.reduce((sum, message) => sum + message.text.length, 0);
+  while (messages.length > 1 && total > CODEX_MAX_CHARS) {
+    total -= messages.shift().text.length;
+    truncated = true;
+  }
+  if (messages.length === 1 && messages[0].text.length > CODEX_MAX_CHARS) {
+    messages[0] = { role: messages[0].role, text: messages[0].text.slice(-CODEX_MAX_CHARS) };
+    truncated = true;
+  }
+  return {
+    ok: true,
+    id,
+    ...(thread.cwd === undefined ? {} : { cwd: thread.cwd }),
+    ...(thread.createdAt === undefined ? {} : { createdAt: thread.createdAt }),
+    messages,
+    truncated,
+  };
+}
+
+const CODEX_LINK_POLICY =
+  '当对话中出现 codex://threads/<id> 形式的链接时，先调用 codex_thread 工具读取该线程的本地内容（工作目录、创建时间与最近的用户/助手消息），再基于这些内容回答。如果工具返回 ok:false，直接告诉用户本机没有这个线程；不要声称能打开 Codex 或访问它的界面。';
+
+/** Register the codex_thread tool and the instruction that points at it. */
+function installCodexThread(ctx) {
+  const tool = {
+    name: 'codex_thread',
+    description:
+      'Read the local Codex thread a codex://threads/<id> link points at: its working directory, creation time and most recent user/assistant messages. Call it whenever a message contains such a link.',
+    parameters: {
+      type: 'object',
+      properties: {
+        link: { type: 'string', description: 'codex://threads/<id> link, or the bare thread id.' },
+        max_messages: { type: 'integer', description: 'How many recent messages to return; default 20, cap 50.' },
+      },
+      required: ['link'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          id: { type: 'string' },
+          cwd: { type: 'string' },
+          createdAt: { type: 'string' },
+          messages: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { role: { type: 'string' }, text: { type: 'string' } },
+              required: ['role', 'text'],
+              additionalProperties: false,
+            },
+          },
+          truncated: { type: 'boolean' },
+          reason: { type: 'string' },
+        },
+        required: ['ok'],
+        additionalProperties: false,
+      },
+      render: (args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args) {
+      const input = args !== null && typeof args === 'object' ? args : {};
+      return codexThreadValue(input.link, input.max_messages);
+    },
+  };
+  ctx.inject(['tools', 'systemPrompt'], (scope) => {
+    scope.effect(() => scope.tools.register(tool), 'dsh-interaction-optimize: codex_thread tool');
+    scope.effect(
+      () => scope.systemPrompt.section({ name: 'dsh-interaction-optimize:codex-links', order: 2350, text: CODEX_LINK_POLICY }),
+      'dsh-interaction-optimize: codex link policy',
+    );
+  });
+}
+
+
+// ---------------------------------------------------------------------------------------------
 // Native file actions.
 // ---------------------------------------------------------------------------------------------
 
@@ -1007,6 +1217,7 @@ function migrateLegacyStore() {
 
 export function apply(ctx) {
   migrateLegacyStore();
+  installCodexThread(ctx);
   // Resolve git the way the Host does (a GUI process may not inherit a shell
   // PATH); the plain name stays the fallback when the capability is absent.
   void (async () => {

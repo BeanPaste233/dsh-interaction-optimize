@@ -8,6 +8,7 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 4. **提示音**：内置两声短促上行音，也可以上传自己的音频文件。
 5. **划词注释**：选中对话里的文字加评论，发送时随消息带给模型，已发送消息里折叠成「N 条注释」胶囊。
 6. **文件右键菜单**：右键消息里的文件链接，用默认应用打开、显示文件位置，或用其他已注册应用打开。
+7. **Codex 深链**：消息里出现 `codex://threads/<id>` 时，模型可以调用 `codex_thread` 工具读取本机该线程的最近对话，再基于内容回答。
 
 ## 配置
 
@@ -88,6 +89,14 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 
 本 Profile 之前看到的「DSH 系统通知」实际来自 **dsh-pet**（`~/.dsh/dsh-pet/main-config.jsonc` 里的 `notificationsEnabled`），DSH 本体并不发完成通知。为了不重复弹两次，已把 `notificationsEnabled` 设为 `false`；dsh-pet 的「权限申请 / 用户选择」通知也会一并停掉，需要时把该值改回 `true` 即可恢复。
 
+## Codex 深链
+
+- 消息里出现 `codex://threads/<id>` 时，模型可以调用 `codex_thread` 工具读取**本机** Codex 的该线程：工作目录、创建时间，以及最近的用户/助手消息。
+- 数据来自 `~/.codex/sessions/…/rollout-<时间>-<id>.jsonl`（部分为 `.jsonl.zst`，自动解压）；只投影用户与助手正文，不包含 reasoning、工具调用与开发者上下文。
+- 单次最多 20 条消息（可传 `max_messages` 到 50）、8000 字符；超出会截断并标记 `truncated`。
+- 本机找不到时（例如链接来自另一台设备）返回 `ok:false, reason:not-found`；模型会直接说明「本机没有这个线程」，不会声称能打开 Codex。
+- 这是模型侧能力：界面不会把链接渲染成按钮，也不注册 `codex://` 协议。
+
 ## 实现要点
 
 | 部分 | 说明 |
@@ -95,6 +104,8 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 | 增删小方块 | 注册到 `conversation.input.dock`（输入框上方通栏），`id` 为 `dsh-interaction-optimize-diff`，session 作用域拿到 `sessionId` 与 `useSessionStatus`。 |
 | 点击胶囊 | 实时（回合进行中）：`ctx.get('sidebarRight').openTab('dsh-interaction-optimize-live')`，该标签类型注册在 `ctx.sidebarRightTabs`、正文注册在 `sidebar.right.pane.tab`（key 为 `dsh-interaction-optimize/live-changes`）；没有右侧栏时退回内联 `LiveDiffPanel`。回合结束后：`openResource('dsh-resource://changes-review/session/<session>/<seq>/<turn>')`。 |
 | 数据来源 | Host 监听 `session/event`：`turn/start` 时留 git 基线（`git stash create` → 回退 HEAD，另记未跟踪文件集），`workspace/changes` 时缓存 `ctx.get('workspaceChanges').summary()`；实时 summary 用 `git diff --numstat -z` 现算并缓存 450 ms。 |
+| Codex 深链 | `ctx.tools.register()` 注册 `codex_thread`（工具定义手写 JSON Schema，不导入官方包）；`ctx.systemPrompt.section()` 注册策略段，提示模型看到链接先读线程。 |
+| 线程读取 | 由 UUIDv7 前缀推出日期目录定位 rollout 文件，必要时递归扫描；`.jsonl.zst` 用 `zlib.zstdDecompressSync` 解压，解析 `session_meta` 与 `response_item:message`。 |
 | 访问控制 | 每个路由先调用 `ctx.get('connection').requestRejection(req)`，Host/Origin 不符或无有效浏览器会话时直接返回 401/403，和 DSH 自身路由一致。 |
 | Host 路由 | `/dsh-interaction-optimize` 前缀：`GET/PUT/DELETE /sound`、`GET /changes?session=…`、`GET /live-diff?session=…&path=…`、`POST /open`、`GET /apps?path=…`。 |
 | 文件打开 | Host 优先走 `sessionController.openWorkspacePath`（原生、可显示窗口）；应用列表走注册表 `OpenWithList` + `App Paths`。拒绝 UNC/设备路径；默认打开拒绝可执行/脚本扩展名；`application` 只允许系统为该扩展名登记过的应用。 |
