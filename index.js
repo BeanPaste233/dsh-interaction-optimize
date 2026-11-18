@@ -862,8 +862,25 @@ async function handleApps(req, res, cwdBySession, ctx) {
   sendJson(res, 200, { ok: true, apps });
 }
 
+/**
+ * Answer a request that fails the Host/Origin fence or carries no live browser
+ * session, the way the Host's own routes do. Every route below is reachable
+ * from any page the browser loads, so this is checked before anything runs.
+ * @returns whether the request was refused.
+ */
+function rejectUntrusted(ctx, req, res) {
+  const connection = ctx.get('connection');
+  if (!connection || typeof connection.requestRejection !== 'function') return false;
+  const rejection = connection.requestRejection(req);
+  if (rejection === undefined) return false;
+  res.writeHead(rejection, { 'cache-control': 'no-store' });
+  res.end();
+  return true;
+}
+
 async function handleRequest(req, res, changesBySession, cwdBySession, liveBySession, completions, ctx) {
   try {
+    if (rejectUntrusted(ctx, req, res)) return;
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (url.pathname === OPEN_PATH) {
       await handleOpen(req, res, cwdBySession, ctx);

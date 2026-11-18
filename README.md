@@ -95,6 +95,7 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 | 增删小方块 | 注册到 `conversation.input.dock`（输入框上方通栏），`id` 为 `dsh-interaction-optimize-diff`，session 作用域拿到 `sessionId` 与 `useSessionStatus`。 |
 | 点击胶囊 | 实时（回合进行中）：`ctx.get('sidebarRight').openTab('dsh-interaction-optimize-live')`，该标签类型注册在 `ctx.sidebarRightTabs`、正文注册在 `sidebar.right.pane.tab`（key 为 `dsh-interaction-optimize/live-changes`）；没有右侧栏时退回内联 `LiveDiffPanel`。回合结束后：`openResource('dsh-resource://changes-review/session/<session>/<seq>/<turn>')`。 |
 | 数据来源 | Host 监听 `session/event`：`turn/start` 时留 git 基线（`git stash create` → 回退 HEAD，另记未跟踪文件集），`workspace/changes` 时缓存 `ctx.get('workspaceChanges').summary()`；实时 summary 用 `git diff --numstat -z` 现算并缓存 450 ms。 |
+| 访问控制 | 每个路由先调用 `ctx.get('connection').requestRejection(req)`，Host/Origin 不符或无有效浏览器会话时直接返回 401/403，和 DSH 自身路由一致。 |
 | Host 路由 | `/dsh-interaction-optimize` 前缀：`GET/PUT/DELETE /sound`、`GET /changes?session=…`、`GET /live-diff?session=…&path=…`、`POST /open`、`GET /apps?path=…`。 |
 | 文件打开 | Host 优先走 `sessionController.openWorkspacePath`（原生、可显示窗口）；应用列表走注册表 `OpenWithList` + `App Paths`。 |
 | 完成提示 | `shell.overlay` 槽位，`position: fixed; right: 20px; bottom: 20px`，浮层点击穿透。 |
