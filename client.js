@@ -831,14 +831,18 @@ window.__ModuleLoader__.load({
           const comment = document.createElement('div');
           comment.className = 'dsh-cl-anno-comment';
           comment.textContent = note.comment === '' ? '—' : note.comment;
-          body.append(quoteLabel, quote, commentLabel, comment);
+          body.append(...(note.quote === '' ? [] : [quoteLabel, quote]), commentLabel, comment);
           row.append(number, body);
           el.appendChild(row);
         });
         document.body.appendChild(el);
         const rect = anchor.getBoundingClientRect();
-        el.style.left = `${Math.max(8, Math.min(window.innerWidth - 456, rect.left))}px`;
-        el.style.top = `${Math.max(8, Math.min(window.innerHeight - 220, rect.bottom + 6))}px`;
+        const size = el.getBoundingClientRect();
+        const left = Math.max(8, Math.min(window.innerWidth - size.width - 8, rect.left));
+        const above = rect.top - size.height - 6;
+        const top = above >= 8 ? above : Math.min(window.innerHeight - size.height - 8, rect.bottom + 6);
+        el.style.left = `${left}px`;
+        el.style.top = `${Math.max(8, top)}px`;
         popover = el;
       };
 
@@ -888,6 +892,9 @@ window.__ModuleLoader__.load({
         if (comments.length === 0) {
           return quotes.length === 0 ? undefined : quotes.map((quote) => ({ quote, comment: '' }));
         }
+        // Without rendered quote elements the label split is the only structure
+        // left, and it still recovers each note's comment text.
+        if (quotes.length === 0) return looseNotes(full);
         return comments.map((comment, index) => ({ quote: quotes[index] ?? quotes[0] ?? '', comment }));
       };
 
@@ -1057,7 +1064,11 @@ window.__ModuleLoader__.load({
         if (event.target instanceof Element && event.target.closest('.dsh-cl-sent-anno') !== null) return;
         closePopover();
       };
-      const onScroll = () => closePopover();
+      const onScroll = (event) => {
+        const target = event === null || event === undefined ? undefined : event.target;
+        if (popover !== undefined && target instanceof Node && popover.contains(target)) return;
+        closePopover();
+      };
       document.addEventListener('click', onDocumentClick);
       window.addEventListener('scroll', onScroll, true);
       schedule();
