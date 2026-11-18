@@ -35,6 +35,9 @@ window.__ModuleLoader__.load({
     const CHANGES_ROUTE = '/dsh-interaction-optimize/changes';
     const LIVE_DIFF_ROUTE = '/dsh-interaction-optimize/live-diff';
     const COMPLETIONS_ROUTE = '/dsh-interaction-optimize/completions';
+    const CODEX_INFO_ROUTE = '/dsh-interaction-optimize/codex-info';
+    /** Codex thread links, as they appear in drafts and messages. */
+    const CODEX_LINK_PATTERN = /codex:\/\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
     /** How often the overlay drains the Host's finished-turn queue. */
     const COMPLETIONS_POLL_MS = 1000;
     /** The right-Sidebar tab type that owns the live change list. */
@@ -90,6 +93,9 @@ window.__ModuleLoader__.load({
       'diff.refresh': '刷新',
       'diff.closePanel': '关闭',
       'diff.ended': '回合已结束',
+      'codex.label': 'Codex 线程',
+      'codex.loading': '读取中…',
+      'codex.missing': '本机没有这个线程',
       'anno.add': '添加到对话',
       'anno.title': '添加注释',
       'anno.quoteLabel': '所选文本：',
@@ -174,6 +180,9 @@ window.__ModuleLoader__.load({
       'diff.refresh': 'Refresh',
       'diff.closePanel': 'Close',
       'diff.ended': 'Turn finished',
+      'codex.label': 'Codex thread',
+      'codex.loading': 'Reading…',
+      'codex.missing': 'Not on this machine',
       'anno.add': 'Add to conversation',
       'anno.title': 'Add a comment',
       'anno.quoteLabel': 'Selected text:',
@@ -275,6 +284,12 @@ window.__ModuleLoader__.load({
       '.dsh-cl-file-add{color:var(--dsw-alias-state-success-primary);font-weight:600}',
       '.dsh-cl-file-del{color:var(--dsw-alias-state-error-primary);font-weight:600}',
       '.dsh-cl-file-note{color:var(--dsw-alias-label-secondary)}',
+      '.dsh-cl-codex-link{color:var(--dsw-alias-link);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}',
+      '.dsh-cl-codex-chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;padding:3px 10px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-layer-1);font-size:12px;line-height:16px}',
+      '.dsh-cl-codex-chip-label{flex:0 0 auto;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-cl-codex-chip-link{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;color:var(--dsw-alias-link);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;text-decoration:underline;text-decoration-style:dotted}',
+      '.dsh-cl-codex-chip-title{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);font-weight:500}',
+      '.dsh-cl-codex-chip-cwd{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary)}',
       '.dsh-cl-anno-menu{position:fixed;z-index:60;display:flex;padding:3px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-menu-surface-fill);backdrop-filter:var(--dsw-menu-backdrop-filter,blur(12px));box-shadow:var(--dsw-shadow-lv2)}',
       '.dsh-cl-anno-menu[hidden],.dsh-cl-anno-editor[hidden]{display:none!important}',
       '.dsh-cl-anno-menu button{min-height:28px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:16px;cursor:pointer}',
@@ -1561,6 +1576,115 @@ window.__ModuleLoader__.load({
               ],
             ),
       ]);
+    }
+
+    /** Codex thread chip: the draft's first codex link, with the thread title. */
+    function CodexLinkDock(props) {
+      const t = typeof props.t === 'function' ? props.t : (key) => key;
+      const useInput = typeof props.useInput === 'function' ? props.useInput : () => '';
+      const draft = useInput((state) => (state && typeof state.draft === 'string' ? state.draft : ''));
+      const [info, setInfo] = React.useState(undefined);
+      const link = React.useMemo(() => {
+        CODEX_LINK_PATTERN.lastIndex = 0;
+        const match = CODEX_LINK_PATTERN.exec(draft);
+        return match === null ? undefined : match[0];
+      }, [draft]);
+
+      React.useEffect(() => {
+        if (link === undefined) {
+          setInfo(undefined);
+          return undefined;
+        }
+        let cancelled = false;
+        setInfo(null);
+        const timer = window.setTimeout(() => {
+          void (async () => {
+            try {
+              const response = await fetch(`${CODEX_INFO_ROUTE}?id=${encodeURIComponent(link)}`, { cache: 'no-store' });
+              const data = await response.json();
+              if (!cancelled) setInfo(data === null || typeof data !== 'object' ? { ok: false, reason: 'unavailable' } : data);
+            } catch {
+              if (!cancelled) setInfo({ ok: false, reason: 'unavailable' });
+            }
+          })();
+        }, 300);
+        return () => {
+          cancelled = true;
+          window.clearTimeout(timer);
+        };
+      }, [link]);
+
+      if (link === undefined || info === undefined) return null;
+      const missing = info !== null && info.ok !== true;
+      const title = info === null
+        ? t('codex.loading')
+        : missing
+          ? t('codex.missing')
+          : (typeof info.title === 'string' && info.title !== '' ? info.title : link);
+      const cwd = info !== null && typeof info.cwd === 'string' ? info.cwd : '';
+      return h(
+        'div',
+        { className: 'dsh-cl-anno-dock' },
+        h(
+          'div',
+          { className: 'dsh-cl-codex-chip', title: cwd },
+          h('span', { className: 'dsh-cl-codex-chip-label' }, t('codex.label')),
+          h('span', { className: 'dsh-cl-codex-chip-link' }, link),
+          h('span', { className: 'dsh-cl-codex-chip-title' }, title),
+          cwd === '' ? null : h('span', { className: 'dsh-cl-codex-chip-cwd' }, cwd),
+        ),
+      );
+    }
+
+    /** Colour every codex:// link rendered in the conversation, like Codex does. */
+    function installCodexLinkStyler() {
+      if (typeof document === 'undefined') return () => {};
+      let raf = 0;
+      const skipped = 'pre, code, textarea, input, [contenteditable="true"], [data-composer-card], .dsh-cl-codex-link';
+      const scan = () => {
+        raf = 0;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        for (const node of nodes) {
+          const text = node.nodeValue || '';
+          if (!/codex:\/\/threads\//i.test(text)) continue;
+          const parent = node.parentElement;
+          if (parent === null || parent.closest(skipped) !== null) continue;
+          CODEX_LINK_PATTERN.lastIndex = 0;
+          let match = CODEX_LINK_PATTERN.exec(text);
+          if (match === null) continue;
+          const fragment = document.createDocumentFragment();
+          let last = 0;
+          while (match !== null) {
+            if (match.index > last) fragment.appendChild(document.createTextNode(text.slice(last, match.index)));
+            const span = document.createElement('span');
+            span.className = 'dsh-cl-codex-link';
+            span.textContent = match[0];
+            fragment.appendChild(span);
+            last = match.index + match[0].length;
+            match = CODEX_LINK_PATTERN.exec(text);
+          }
+          if (last < text.length) fragment.appendChild(document.createTextNode(text.slice(last)));
+          node.replaceWith(fragment);
+        }
+      };
+      const schedule = () => {
+        if (raf !== 0) return;
+        raf = window.requestAnimationFrame(scan);
+      };
+      const observer = new MutationObserver(schedule);
+      observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+      schedule();
+      const late = [window.setTimeout(schedule, 600), window.setTimeout(schedule, 2500)];
+      return () => {
+        observer.disconnect();
+        for (const timer of late) window.clearTimeout(timer);
+        if (raf !== 0) window.cancelAnimationFrame(raf);
+        for (const span of document.querySelectorAll('.dsh-cl-codex-link')) {
+          span.replaceWith(document.createTextNode(span.textContent || ''));
+        }
+      };
     }
 
     // ------------------------------------------------------------------
@@ -3114,6 +3238,16 @@ window.__ModuleLoader__.load({
             TurnCompleteToastSettings,
           ),
         );
+
+        // Codex thread chip above the composer; the transcript colours the link
+        // itself through installCodexLinkStyler.
+        ctx.slots.inject('conversation.input.dock', () =>
+          ctx.slots.register(
+            { name: 'conversation.input.dock', id: `${NS}-codex`, order: 11, locale: NS },
+            CodexLinkDock,
+          ),
+        );
+        ctx.effect(() => installCodexLinkStyler(), 'dsh-interaction-optimize: codex link colours');
 
         // Diff badge above the composer, refreshed from the Host's workspace
         // changes record while a turn runs. Clicking it opens the same

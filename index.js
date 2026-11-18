@@ -585,6 +585,9 @@ const CODEX_THREAD_LINK = /^codex:\/\/threads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 const CODEX_DEFAULT_MESSAGES = 20;
 const CODEX_MAX_MESSAGES = 50;
 const CODEX_MAX_CHARS = 8000;
+const CODEX_INFO_PATH = `${ROUTE_PREFIX}/codex-info`;
+/** Lazily opened read-only Codex catalog; null once opening failed. */
+let codexCatalogDb;
 
 /** The thread id inside a codex:// link or a bare id. */
 function codexThreadId(input) {
@@ -683,10 +686,56 @@ function readCodexThread(file) {
   return { cwd, createdAt, messages };
 }
 
+/** Read the thread title Codex keeps in its local catalog, when it is there. */
+async function codexCatalogTitle(id) {
+  try {
+    if (codexCatalogDb === undefined) {
+      const module = await import('node:sqlite').catch(() => undefined);
+      codexCatalogDb = module === undefined ? null : new module.DatabaseSync(join(CODEX_HOME, 'sqlite', 'codex.db'), { readOnly: true });
+    }
+    if (codexCatalogDb === null) return undefined;
+    const row = codexCatalogDb.prepare('select display_title, cwd from local_thread_catalog where thread_id = ?').get(id);
+    if (row === undefined || typeof row.display_title !== 'string' || row.display_title.trim() === '') return undefined;
+    return {
+      title: row.display_title.trim(),
+      ...(typeof row.cwd === 'string' && row.cwd !== '' ? { cwd: row.cwd } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Title, working directory and creation time for one thread, if it is local. */
+async function codexThreadInfo(id) {
+  const catalog = await codexCatalogTitle(id);
+  const file = codexThreadFile(id);
+  if (file === undefined) {
+    return catalog === undefined ? { ok: false, id, reason: 'not-found' } : { ok: true, id, ...catalog };
+  }
+  let thread;
+  try {
+    thread = readCodexThread(file);
+  } catch {
+    return { ok: false, id, reason: 'unreadable' };
+  }
+  const firstUser = thread.messages.find((message) => message.role === 'user');
+  const fallback = firstUser === undefined ? undefined : firstUser.text.replace(/\s+/g, ' ').trim().slice(0, 60);
+  const title = catalog === undefined ? fallback : catalog.title;
+  return {
+    ok: true,
+    id,
+    ...(title === undefined || title === '' ? {} : { title }),
+    ...(catalog !== undefined && catalog.cwd !== undefined ? { cwd: catalog.cwd } : thread.cwd === undefined ? {} : { cwd: thread.cwd }),
+    ...(thread.createdAt === undefined ? {} : { createdAt: thread.createdAt }),
+  };
+}
+
 /** The canonical value one codex_thread call returns. */
-function codexThreadValue(input, maxMessages) {
+async function codexThreadValue(input, maxMessages) {
   const id = codexThreadId(input);
   if (id === undefined) return { ok: false, reason: 'invalid-link' };
+  const info = await codexThreadInfo(id);
+  if (info.ok !== true) return { ok: false, id, reason: info.reason };
   const file = codexThreadFile(id);
   if (file === undefined) return { ok: false, id, reason: 'not-found' };
   let thread;
@@ -712,8 +761,9 @@ function codexThreadValue(input, maxMessages) {
   return {
     ok: true,
     id,
-    ...(thread.cwd === undefined ? {} : { cwd: thread.cwd }),
-    ...(thread.createdAt === undefined ? {} : { createdAt: thread.createdAt }),
+    ...(info.title === undefined ? {} : { title: info.title }),
+    ...(info.cwd === undefined ? {} : { cwd: info.cwd }),
+    ...(info.createdAt === undefined ? {} : { createdAt: info.createdAt }),
     messages,
     truncated,
   };
@@ -743,6 +793,7 @@ function installCodexThread(ctx) {
         properties: {
           ok: { type: 'boolean' },
           id: { type: 'string' },
+          title: { type: 'string' },
           cwd: { type: 'string' },
           createdAt: { type: 'string' },
           messages: {
@@ -1164,6 +1215,19 @@ async function handleRequest(req, res, changesBySession, cwdBySession, liveBySes
         ? completions.list.filter((item) => item.id > parsed)
         : [];
       sendJson(res, 200, { completions: list, last: completions.next });
+      return;
+    }
+    if (url.pathname === CODEX_INFO_PATH) {
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { error: 'method not allowed' });
+        return;
+      }
+      const id = codexThreadId(url.searchParams.get('id') ?? '');
+      if (id === undefined) {
+        sendJson(res, 200, { ok: false, reason: 'invalid-link' });
+        return;
+      }
+      sendJson(res, 200, await codexThreadInfo(id));
       return;
     }
     if (url.pathname === LIVE_DIFF_PATH) {
