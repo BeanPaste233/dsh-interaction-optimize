@@ -842,81 +842,73 @@ window.__ModuleLoader__.load({
         popover = el;
       };
 
-      /** Hide the block's rendered nodes; returns the element the pill joins. */
-      const hideBlock = (root, marker) => {
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      /** Lowest common ancestor of two elements. */
+      const commonAncestor = (left, right) => {
+        const ancestors = new Set();
+        for (let el = right; el !== null; el = el.parentElement) ancestors.add(el);
+        for (let el = left; el !== null; el = el.parentElement) {
+          if (ancestors.has(el)) return el;
+        }
+        return undefined;
+      };
+
+      /**
+       * Collapse one rendered block, whatever DOM shape Markdown produced for
+       * it: the markers are located as text, the whole range between them is
+       * removed with a DOM Range, and the pill takes the start marker's place.
+       * @returns whether a block was collapsed.
+       */
+      const collapseOne = () => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         let startNode;
         let endNode;
+        let startIndex = -1;
+        let endIndex = -1;
         while (walker.nextNode()) {
           const node = walker.currentNode;
           const value = node.nodeValue || '';
           if (startNode === undefined) {
-            if (value.includes(marker.start)) startNode = node;
-          } else if (value.includes(marker.end)) {
+            const at = value.indexOf(ANNO_START);
+            if (at >= 0) {
+              startNode = node;
+              startIndex = at;
+            }
+            continue;
+          }
+          const at = value.indexOf(ANNO_END);
+          if (at >= 0) {
             endNode = node;
+            endIndex = at;
             break;
           }
         }
-        if (startNode === undefined) return undefined;
+        if (startNode === undefined || endNode === undefined) return false;
         const startEl = startNode.parentElement;
-        if (startEl === null) return undefined;
-        const endEl = endNode !== undefined ? endNode.parentElement : null;
-
-        if (endEl !== null && endEl !== startEl) {
-          const ancestors = new Set();
-          for (let el = endEl; el !== null; el = el.parentElement) ancestors.add(el);
-          let common = startEl;
-          while (common !== null && !ancestors.has(common)) common = common.parentElement;
-          if (common !== null) {
-            let hiding = false;
-            for (const child of Array.from(common.children)) {
-              if (!hiding && child.contains(startEl)) hiding = true;
-              if (!hiding) continue;
-              child.style.display = 'none';
-              if (child.contains(endEl)) break;
-            }
-            return common;
-          }
-        }
-
-        // Same block (or a missing end marker): keep the text before the block.
-        const text = startEl.textContent || '';
-        const cut = text.indexOf(marker.start);
-        startEl.textContent = cut >= 0 ? text.slice(0, cut) : '';
-        startEl.style.display = '';
-        return startEl.parentElement ?? startEl;
+        if (startEl === null) return false;
+        const common = commonAncestor(startEl, endNode.parentElement ?? startEl);
+        const parsed = parseSentAnnotations(common === undefined ? '' : common.textContent || '');
+        if (parsed === undefined) return false;
+        const range = document.createRange();
+        range.setStart(startNode, startIndex);
+        range.setEnd(endNode, endIndex + ANNO_END.length);
+        range.deleteContents();
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'dsh-cl-sent-anno';
+        pill.textContent = `${parsed.notes.length} ${t('anno.count')}`;
+        pill.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openPopover(pill, parsed.notes);
+        });
+        startEl.appendChild(pill);
+        return true;
       };
 
       const scan = () => {
         raf = 0;
-        const wrappers = new Set();
-        for (const selector of [
-          '[data-chat-flow-kind="user"]',
-          '[data-chat-flow-kind="steering"]',
-          '[data-slot="conversation.chat.node"]',
-        ]) {
-          for (const element of document.querySelectorAll(selector)) {
-            const text = element.textContent || '';
-            if (text.includes(ANNO_START) || text.includes(ANNO_END)) wrappers.add(element);
-          }
-        }
-        for (const node of wrappers) {
-          if (node.querySelector('.dsh-cl-sent-anno') !== null) continue;
-          const text = node.textContent || '';
-          const parsed = parseSentAnnotations(text);
-          if (parsed === undefined) continue;
-          const host = hideBlock(node, parsed.marker);
-          if (host === undefined) continue;
-          const pill = document.createElement('button');
-          pill.type = 'button';
-          pill.className = 'dsh-cl-sent-anno';
-          pill.textContent = `${parsed.notes.length} ${t('anno.count')}`;
-          pill.addEventListener('click', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            openPopover(pill, parsed.notes);
-          });
-          host.appendChild(pill);
+        for (let index = 0; index < 20; index += 1) {
+          if (!collapseOne()) break;
         }
       };
 
