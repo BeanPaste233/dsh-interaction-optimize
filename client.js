@@ -1028,57 +1028,19 @@ window.__ModuleLoader__.load({
         return roots;
       };
 
-      /** Temporary on-screen diagnostic: only drawn when a block fails to fold. */
-      const debugBadge = (text) => {
-        let badge = document.getElementById('dsh-cl-anno-debug');
-        if (badge === null) {
-          badge = document.createElement('div');
-          badge.id = 'dsh-cl-anno-debug';
-          badge.style.cssText =
-            'position:fixed;left:8px;bottom:8px;z-index:2147483647;max-width:min(720px,calc(100vw - 16px));padding:4px 8px;border-radius:6px;background:#b00020;color:#fff;font:11px/15px ui-monospace,monospace;white-space:pre-wrap';
-          document.body.appendChild(badge);
-        }
-        badge.textContent = text;
-      };
-      const clearDebugBadge = () => {
-        document.getElementById('dsh-cl-anno-debug')?.remove();
-      };
-
       const scan = () => {
         raf = 0;
+        // A message that merely quotes one marker in prose is not a block.
         const bodyText = document.body.textContent || '';
-        if (!bodyText.includes(ANNO_START) && !bodyText.includes(ANNO_END)) {
-          clearDebugBadge();
-          return;
-        }
+        if (!bodyText.includes(ANNO_START) || !bodyText.includes(ANNO_END)) return;
         const roots = blockRoots();
         if (roots.size === 0) {
-          if (collapseGlobal()) {
-            clearDebugBadge();
-            return;
-          }
-          const hasStart = bodyText.includes(ANNO_START);
-          const hasEnd = bodyText.includes(ANNO_END);
-          debugBadge(
-            'anno: markers outside any node (S=' + (hasStart ? 1 : 0) + ' E=' + (hasEnd ? 1 : 0) + ')',
-          );
+          collapseGlobal();
           return;
         }
         for (const root of roots) {
-          if (collapseIn(root)) {
-            clearDebugBadge();
-            return;
-          }
+          if (collapseIn(root)) return;
         }
-        const details = [...roots]
-          .map((root) => {
-            const text = root.textContent || '';
-            const tag = root.getAttribute('data-chat-node-key') || root.getAttribute('data-chat-flow-key') || root.tagName;
-            const notes = notesFromDom(root, text) ?? looseNotes(text);
-            return tag + (text.includes(ANNO_START) ? ' S' : ' -') + (text.includes(ANNO_END) ? 'E' : '-') + (notes === undefined ? ' -' : ' N' + notes.length);
-          })
-          .join(' | ');
-        debugBadge('anno: found ' + roots.size + ' root(s), none collapsed: ' + details);
       };
       const schedule = () => {
         if (raf !== 0) return;
