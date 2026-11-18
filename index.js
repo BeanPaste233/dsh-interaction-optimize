@@ -16,8 +16,8 @@
  *     `/dsh-interaction-optimize/apps`: native open/reveal through the Host
  *     session controller, plus the extension's registered applications.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, join, normalize } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -28,6 +28,11 @@ const ROUTE_PREFIX = '/dsh-interaction-optimize';
 const SOUND_PATH = `${ROUTE_PREFIX}/sound`;
 const CHANGES_PATH = `${ROUTE_PREFIX}/changes`;
 const LIVE_DIFF_PATH = `${ROUTE_PREFIX}/live-diff`;
+/** Extensions Windows runs (or scripts) on open; the default-open action refuses them. */
+const RUNNABLE_EXTENSIONS = new Set([
+  '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', '.msi', '.msp', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.hta', '.lnk', '.reg', '.cpl', '.msc', '.scf', '.url', '.appref-ms', '.settingcontent-ms',
+]);
+
 /** Finished turns of every Session, drained by the browser half. */
 const COMPLETIONS_PATH = `${ROUTE_PREFIX}/completions`;
 const OPEN_PATH = `${ROUTE_PREFIX}/open`;
@@ -334,6 +339,7 @@ function trackSessionCwd(cwdBySession, session, event) {
   const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : undefined;
   if (typeof sessionId !== 'string' || sessionId === '' || cwd === undefined) return;
   cwdBySession.set(sessionId, cwd);
+  if (cwdBySession.size > MAX_TRACKED_SESSIONS) cwdBySession.delete(cwdBySession.keys().next().value);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -525,6 +531,22 @@ async function liveDiffOf(liveBySession, sessionId, requestPath) {
   const tracked = await gitRun(root, ['diff', '--no-color', '--unified=3', ref, '--', relative]);
   if (tracked !== undefined && tracked !== '') return tracked;
   const absolute = join(root, relative);
+  // A symlink inside the repository must not become a window onto a file
+  // outside it, so the resolved target is checked against the repository root.
+  let realRoot;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = root;
+  }
+  let realFile;
+  try {
+    realFile = realpathSync(absolute);
+  } catch {
+    realFile = absolute;
+  }
+  const rootPrefix = realRoot.toLowerCase() + sep;
+  if (realFile.toLowerCase() !== realRoot.toLowerCase() && !realFile.toLowerCase().startsWith(rootPrefix)) return '';
   const counted = countFileLines(absolute);
   if (counted === undefined || counted.binary === true || counted.oversized === true) return '';
   const text = readFileSync(absolute, 'utf8');
@@ -651,6 +673,9 @@ function resolveLinkPath(rawPath, cwd) {  if (typeof rawPath !== 'string') retur
     }
   }
   path = path.replace(/^["'`]|["'`]$/g, '');
+  // UNC and device paths reach a network share or a console handle: opening one
+  // can hand an SMB challenge to a stranger, so they are never followed.
+  if (/^[\\/]{2}/.test(path)) return undefined;
   if (process.platform === 'win32' && /^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
   if (path.startsWith('~/') || path === '~') {
     path = join(homedir(), path.slice(1));
@@ -782,12 +807,9 @@ async function handleOpen(req, res, cwdBySession, ctx) {
     return;
   }
   const action = payload.action === 'reveal' ? 'reveal' : payload.action === 'pick' ? 'pick' : 'open';
-  const cwd =
-    typeof payload.cwd === 'string' && isAbsolute(payload.cwd)
-      ? payload.cwd
-      : typeof payload.session === 'string'
-        ? cwdBySession.get(payload.session)
-        : undefined;
+  // The Session decides where a relative link resolves; a request cannot name an
+  // arbitrary base directory.
+  const cwd = typeof payload.session === 'string' ? cwdBySession.get(payload.session) : undefined;
   logOpen({ action, input: payload.path, cwd, platform: process.platform });
   const path = resolveLinkPath(payload.path, cwd);
   if (path === undefined) {
@@ -812,8 +834,22 @@ async function handleOpen(req, res, cwdBySession, ctx) {
   const application = typeof payload.application === 'string' && payload.application !== '' ? payload.application : undefined;
   // A configured application is an executable path: launch it directly with
   // the file. Everything else goes through the Host's native association.
+  // Only an application the OS itself offered for this extension may be
+  // launched; a request cannot name an arbitrary executable.
+  const allowedApplications =
+    application === undefined ? [] : await extensionApplications(path);
   const applicationExe =
-    application !== undefined && /\.exe$/i.test(application) && existsSync(application) ? application : undefined;
+    application !== undefined &&
+    /\.exe$/i.test(application) &&
+    existsSync(application) &&
+    allowedApplications.some((candidate) => candidate.id.toLowerCase() === application.toLowerCase())
+      ? application
+      : undefined;
+  if (application === undefined && action === 'open' && !isDirectory && RUNNABLE_EXTENSIONS.has(extname(path).toLowerCase())) {
+    logOpen({ action, path, error: 'refused to run an executable' });
+    sendJson(res, 400, { error: 'refusing to run an executable; use "open with another app" instead' });
+    return;
+  }
   if (applicationExe !== undefined) {
     const launched = await spawnDetached(applicationExe, [path]);
     logOpen({ action, path, application: applicationExe, launched });
@@ -821,7 +857,7 @@ async function handleOpen(req, res, cwdBySession, ctx) {
     return;
   }
   if (action !== 'pick') {
-    const native = await nativeOpen(ctx, path, action, application);
+    const native = await nativeOpen(ctx, path, action, applicationExe);
     logOpen({ action, path, native, application });
     if (native === true) {
       sendJson(res, 200, { ok: true, path });
@@ -850,8 +886,7 @@ async function handleApps(req, res, cwdBySession, ctx) {
   }
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
   const cwd =
-    url.searchParams.get('cwd') ??
-    (url.searchParams.get('session') !== null ? cwdBySession.get(url.searchParams.get('session')) : undefined);
+    url.searchParams.get('session') !== null ? cwdBySession.get(url.searchParams.get('session')) : undefined;
   const path = resolveLinkPath(url.searchParams.get('path') ?? '', cwd);
   if (path === undefined) {
     sendJson(res, 400, { error: 'missing path' });

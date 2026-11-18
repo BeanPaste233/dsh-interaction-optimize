@@ -97,12 +97,12 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 | 数据来源 | Host 监听 `session/event`：`turn/start` 时留 git 基线（`git stash create` → 回退 HEAD，另记未跟踪文件集），`workspace/changes` 时缓存 `ctx.get('workspaceChanges').summary()`；实时 summary 用 `git diff --numstat -z` 现算并缓存 450 ms。 |
 | 访问控制 | 每个路由先调用 `ctx.get('connection').requestRejection(req)`，Host/Origin 不符或无有效浏览器会话时直接返回 401/403，和 DSH 自身路由一致。 |
 | Host 路由 | `/dsh-interaction-optimize` 前缀：`GET/PUT/DELETE /sound`、`GET /changes?session=…`、`GET /live-diff?session=…&path=…`、`POST /open`、`GET /apps?path=…`。 |
-| 文件打开 | Host 优先走 `sessionController.openWorkspacePath`（原生、可显示窗口）；应用列表走注册表 `OpenWithList` + `App Paths`。 |
+| 文件打开 | Host 优先走 `sessionController.openWorkspacePath`（原生、可显示窗口）；应用列表走注册表 `OpenWithList` + `App Paths`。拒绝 UNC/设备路径；默认打开拒绝可执行/脚本扩展名；`application` 只允许系统为该扩展名登记过的应用。 |
 | 完成提示 | `shell.overlay` 槽位，`position: fixed; right: 20px; bottom: 20px`，浮层点击穿透。 |
 | 系统通知 | 页面内 `new Notification(...)`（`silent: true`，点击聚焦窗口）；权限从配置页请求。 |
 | 提示音 | 内置音用 Web Audio 合成；自定义音用 `new Audio('/dsh-interaction-optimize/sound?v=…')`。 |
 | 当前会话 | 根级标准 Hook `useSessions` 找到 `retainedBy.mainView > 0` 的会话。 |
-| 精确信号 | `ctx.get('sessions').binding(sessionId).eventSource` 的 `append` 变更里读取 `turn/end` 与 `assistant/message`。 |
+| 完成信号 | Host 记录所有会话的 `turn/end`（含回复摘录）到内存队列，Client 每秒用游标拉取 `GET /completions?after=…`，因此切走会话也能提醒。 |
 | 配置界面 | 注册到 `plugins.row.config`，键位 `dsh-interaction-optimize#dsh-interaction-optimize`。 |
 | 文案 | `ctx.locale` 命名空间 `dsh-interaction-optimize`，中英双字典。 |
 
@@ -131,3 +131,5 @@ dsh-interaction-optimize/
 - 自定义音频最多 4 MB；浏览器后台播放音量可能被系统/浏览器压低。
 - 兜底通道无法区分「完成」与「手动停止」，正常路径（事件源可用）下不会用到它。
 - 「其他应用」列表来自系统登记的 OpenWithList；没有登记过的应用不会出现（可用系统「打开方式」自行登记）。
+- 可执行与脚本类文件（`.exe`、`.bat`、`.ps1`、`.lnk`、`.scf` 等）不会被「用默认应用打开」直接运行；需要时请选「其他应用打开…」。
+- 所有 Host 路由都要求 DSH 的 Host/Origin 校验与有效浏览器会话；跨站页面无法调用。
