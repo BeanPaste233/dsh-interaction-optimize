@@ -954,6 +954,49 @@ window.__ModuleLoader__.load({
         return true;
       };
 
+      /**
+       * Fold a block whose markers live outside any message-shaped node: the
+       * whole body is treated as one text flow, which is what a detached or
+       * duplicated render leaves behind.
+       * @returns whether a block was collapsed.
+       */
+      const collapseGlobal = () => {
+        const nodes = textNodesOf(document.body);
+        if (nodes.length === 0) return false;
+        const full = nodes.map((node) => node.nodeValue || '').join('');
+        const start = full.indexOf(ANNO_START);
+        if (start < 0) return false;
+        const end = full.indexOf(ANNO_END, start + ANNO_START.length);
+        if (end < 0) return false;
+        // Only a single small pair is safe to delete body-wide: a stray start
+        // and end in unrelated corners must not swallow the transcript.
+        if (full.indexOf(ANNO_START, start + ANNO_START.length) >= 0) return false;
+        if (full.indexOf(ANNO_END, end + ANNO_END.length) >= 0) return false;
+        if (end - start > 4000) return false;
+        const notes = looseNotes(full) ?? [];
+        if (notes.length === 0) return false;
+        const from = pointAt(nodes, start);
+        const to = pointAt(nodes, end + ANNO_END.length);
+        if (from === undefined || to === undefined) return false;
+        const host = from.node.parentElement;
+        if (host === null) return false;
+        const range = document.createRange();
+        range.setStart(from.node, from.offset);
+        range.setEnd(to.node, to.offset);
+        range.deleteContents();
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'dsh-cl-sent-anno';
+        pill.textContent = notes.length + ' ' + t('anno.count');
+        pill.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openPopover(pill, notes);
+        });
+        host.appendChild(pill);
+        return true;
+      };
+
       /** Message-shaped nodes that hold a whole block, innermost first. */
       const blockRoots = () => {
         const roots = new Set();
@@ -1010,7 +1053,15 @@ window.__ModuleLoader__.load({
         }
         const roots = blockRoots();
         if (roots.size === 0) {
-          debugBadge('anno: markers in DOM but no candidate node (' + ANNO_START.length + ')');
+          if (collapseGlobal()) {
+            clearDebugBadge();
+            return;
+          }
+          const hasStart = bodyText.includes(ANNO_START);
+          const hasEnd = bodyText.includes(ANNO_END);
+          debugBadge(
+            'anno: markers outside any node (S=' + (hasStart ? 1 : 0) + ' E=' + (hasEnd ? 1 : 0) + ')',
+          );
           return;
         }
         for (const root of roots) {
