@@ -2507,6 +2507,16 @@ window.__ModuleLoader__.load({
         return path;
       };
 
+      /** A folder-looking target: no extension on the last segment, or a trailing slash. */
+      const looksLikeDirectory = (candidate) => {
+        const trimmed = String(candidate).replace(/[\\/]+$/, '');
+        if (trimmed !== String(candidate)) return true;
+        const base = trimmed.split(/[\\/]/).pop() ?? '';
+        if (base === '') return true;
+        if (/^\.[^.]+$/.test(base)) return true;
+        return !/[^.]\.[^.]*$/.test(base);
+      };
+
       const onContextMenu = (event) => {
         if (!(event.target instanceof Element)) return;
         if (typeof getEnabled === 'function' && getEnabled() !== true) return;
@@ -2517,8 +2527,12 @@ window.__ModuleLoader__.load({
         if (element === null) return;
         const path = pathFromElement(element);
         if (path === undefined) return;
+        // DSH's own file menu answers files well but treats a directory as an
+        // unknown association. Take folders over in the capture phase, before
+        // the link's own handler opens that menu.
+        if (!looksLikeDirectory(path)) return;
         event.preventDefault();
-        event.stopPropagation();
+        event.stopImmediatePropagation();
         showMenu(event.clientX, event.clientY, path);
       };
 
@@ -2530,14 +2544,14 @@ window.__ModuleLoader__.load({
       };
       const onScroll = () => close();
 
-      document.addEventListener('contextmenu', onContextMenu);
+      document.addEventListener('contextmenu', onContextMenu, true);
       document.addEventListener('mousedown', onPointerDown, true);
       document.addEventListener('keydown', onKeyDown, true);
       window.addEventListener('scroll', onScroll, true);
       window.addEventListener('resize', onScroll);
 
       return () => {
-        document.removeEventListener('contextmenu', onContextMenu);
+        document.removeEventListener('contextmenu', onContextMenu, true);
         document.removeEventListener('mousedown', onPointerDown, true);
         document.removeEventListener('keydown', onKeyDown, true);
         window.removeEventListener('scroll', onScroll, true);
