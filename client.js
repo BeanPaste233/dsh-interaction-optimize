@@ -310,8 +310,8 @@ window.__ModuleLoader__.load({
       '.dsh-cl-anno-menu button:hover{background:var(--dsw-alias-bg-layer-2)}',
       '.dsh-cl-anno-marker{position:fixed;z-index:55;display:grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-foreground);font-family:inherit;font-size:11px;font-weight:600;line-height:1;box-shadow:var(--dsw-shadow-lv1);cursor:pointer}',
       '.dsh-cl-anno-marker[hidden]{display:none!important}',
-      '.dsh-cl-anno-editor{position:fixed;z-index:60;display:flex;align-items:center;gap:6px;box-sizing:border-box;width:360px;padding:6px 6px 6px 16px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);font-family:inherit}',
-      '.dsh-cl-anno-input{flex:1 1 auto;min-width:0;border:0;outline:none;background:transparent;color:inherit;font-family:inherit;font-size:13px;line-height:20px}',
+      '.dsh-cl-anno-editor{position:fixed;z-index:60;display:flex;align-items:flex-end;gap:6px;box-sizing:border-box;width:360px;padding:6px 6px 6px 16px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);font-family:inherit}',
+      '.dsh-cl-anno-input{flex:1 1 auto;min-width:0;min-height:20px;max-height:120px;padding:5px 0;border:0;outline:none;background:transparent;color:inherit;font-family:inherit;font-size:13px;line-height:20px;resize:none;overflow-y:auto;box-sizing:border-box}',
       '.dsh-cl-anno-input::placeholder{color:var(--dsw-alias-label-secondary)}',
       '.dsh-cl-anno-check{flex:0 0 auto;display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font-size:14px;line-height:1;cursor:pointer}',
       '.dsh-cl-anno-check:hover{background:var(--dsw-alias-button-primary-hover)}','.dsh-cl-anno-check:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
@@ -1161,7 +1161,7 @@ window.__ModuleLoader__.load({
       editor.className = 'dsh-cl-anno-editor';
       editor.hidden = true;
       editor.innerHTML =
-        '<input type="text" class="dsh-cl-anno-input" /><button type="button" class="dsh-cl-anno-check">✓</button>';
+        '<textarea class="dsh-cl-anno-input" rows="1" spellcheck="false"></textarea><button type="button" class="dsh-cl-anno-check">✓</button>';
       document.body.appendChild(editor);
       const inputEl = editor.querySelector('.dsh-cl-anno-input');
       const checkEl = editor.querySelector('.dsh-cl-anno-check');
@@ -1183,12 +1183,23 @@ window.__ModuleLoader__.load({
         editingId = undefined;
         editor.hidden = true;
         inputEl.value = '';
+        inputEl.style.height = '';
+      };
+
+      /** Grow the editor with its content, up to the CSS max-height. */
+      const resizeInput = () => {
+        inputEl.style.height = 'auto';
+        inputEl.style.height = `${Math.min(120, inputEl.scrollHeight)}px`;
+        inputEl.style.overflowY = inputEl.scrollHeight > 120 ? 'auto' : 'hidden';
       };
 
       const placeEditor = (rect) => {
         const width = 360;
         editor.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, rect.left + rect.width / 2 - width / 2))}px`;
-        const above = rect.top - 56;
+        editor.hidden = false;
+        resizeInput();
+        const height = editor.offsetHeight > 0 ? editor.offsetHeight : 48;
+        const above = rect.top - height - 8;
         editor.style.top = `${above > 8 ? above : rect.bottom + 8}px`;
       };
 
@@ -1196,9 +1207,9 @@ window.__ModuleLoader__.load({
         if (pending === undefined) return;
         editorOpen = true;
         menu.hidden = true;
-        placeEditor(pending.rect);
-        editor.hidden = false;
         inputEl.value = '';
+        resizeInput();
+        placeEditor(pending.rect);
         inputEl.focus();
       };
 
@@ -1211,9 +1222,9 @@ window.__ModuleLoader__.load({
           detail.rect !== null && typeof detail.rect === 'object'
             ? detail.rect
             : { left: window.innerWidth / 2, top: window.innerHeight / 2, width: 0, height: 0, bottom: window.innerHeight / 2 };
-        placeEditor(rect);
-        editor.hidden = false;
         inputEl.value = typeof detail.comment === 'string' ? detail.comment : '';
+        resizeInput();
+        placeEditor(rect);
         inputEl.focus();
         inputEl.select();
       };
@@ -1300,6 +1311,7 @@ window.__ModuleLoader__.load({
 
       addButton.addEventListener('click', openEditor);
       checkEl.addEventListener('click', commit);
+      inputEl.addEventListener('input', resizeInput);
       const onEditRequest = (event) => openEditEditor(event.detail);
       window.addEventListener('dsh-interaction-optimize:annotation-edit', onEditRequest);
       document.addEventListener('mouseup', onMouseUp);
