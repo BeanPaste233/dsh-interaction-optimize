@@ -1229,10 +1229,23 @@ window.__ModuleLoader__.load({
         inputEl.select();
       };
 
+      /** Hand focus back to the composer so Enter still sends without a click. */
+      const focusComposer = () => {
+        const card = document.querySelector('[data-composer-card]');
+        const editable = card === null ? null : card.querySelector('[contenteditable="true"]');
+        if (editable === null) return;
+        try {
+          editable.focus();
+        } catch {
+          // A read-only composer refuses focus; the draft stays untouched.
+        }
+      };
+
       const commit = () => {
         if (editingId !== undefined) {
           updateAnnotation(editingId, inputEl.value.trim());
           closeEditor();
+          focusComposer();
           return;
         }
         if (pending === undefined) return;
@@ -1241,6 +1254,7 @@ window.__ModuleLoader__.load({
         pending = undefined;
         const selection = window.getSelection();
         if (selection) selection.removeAllRanges();
+        focusComposer();
       };
 
       const inspectSelection = () => {
