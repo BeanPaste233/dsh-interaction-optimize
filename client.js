@@ -53,6 +53,7 @@ window.__ModuleLoader__.load({
     const DEFAULT_SETTINGS = {
       inAppToast: true,
       diffBadge: true,
+      diffAfterTurnSeconds: 10,
       annotations: true,
       fileMenu: true,
       sound: true,
@@ -68,6 +69,9 @@ window.__ModuleLoader__.load({
 
     /** Selectable auto-dismiss delays in seconds; `0` keeps the toast until dismissed. */
     const HOLD_OPTIONS = [3, 5, 6, 8, 12, 20, 30, 0];
+
+    /** How long the diff badge lingers after a turn ends; `0` keeps it until the next turn. */
+    const DIFF_LINGER_OPTIONS = [0, 3, 5, 10, 30, 60];
 
     const ZH = {
       'toast.completed': '本轮执行完成',
@@ -121,6 +125,10 @@ window.__ModuleLoader__.load({
       'settings.system.permission.enable': '启用系统通知',
       'settings.diffBadge.title': '输入框上方增删统计',
       'settings.diffBadge.desc': '在输入框上方显示本轮代码改动的新增/删除行数与文件数，点击可在右侧栏查看 diff。',
+      'settings.diffLinger.title': '回合结束后停留时间',
+      'settings.diffLinger.desc': '增删统计在本轮结束后继续显示多久；选「一直显示」则保留到下一轮开始。',
+      'settings.diffLinger.keep': '一直显示',
+      'settings.diffLinger.seconds': '秒',
       'settings.annotations.title': '划词注释',
       'settings.annotations.desc': '在对话里选中文字即可添加评论，发送时随消息一起带给模型。',
       'settings.fileMenu.title': '文件右键菜单',
@@ -208,6 +216,10 @@ window.__ModuleLoader__.load({
       'settings.system.permission.enable': 'Allow system notifications',
       'settings.diffBadge.title': 'Diff badge above the composer',
       'settings.diffBadge.desc': 'Show this turn\'s added/deleted line counts and changed file count above the input box; click it to read the diff in the right Sidebar.',
+      'settings.diffLinger.title': 'How long the diff badge stays',
+      'settings.diffLinger.desc': 'How long the diff badge remains after a turn ends; "Keep showing" holds it until the next turn starts.',
+      'settings.diffLinger.keep': 'Keep showing',
+      'settings.diffLinger.seconds': 's',
       'settings.annotations.title': 'Annotate selected text',
       'settings.annotations.desc': 'Select text in the conversation to add comments that travel with your message.',
       'settings.fileMenu.title': 'File context menu',
@@ -378,6 +390,10 @@ window.__ModuleLoader__.load({
       return {
         inAppToast: typeof value.inAppToast === 'boolean' ? value.inAppToast : DEFAULT_SETTINGS.inAppToast,
         diffBadge: typeof value.diffBadge === 'boolean' ? value.diffBadge : DEFAULT_SETTINGS.diffBadge,
+        diffAfterTurnSeconds:
+          Number.isFinite(value.diffAfterTurnSeconds) && value.diffAfterTurnSeconds >= 0
+            ? Math.min(600, Math.round(value.diffAfterTurnSeconds))
+            : DEFAULT_SETTINGS.diffAfterTurnSeconds,
         annotations: typeof value.annotations === 'boolean' ? value.annotations : DEFAULT_SETTINGS.annotations,
         fileMenu: typeof value.fileMenu === 'boolean' ? value.fileMenu : DEFAULT_SETTINGS.fileMenu,
         sound: typeof value.sound === 'boolean' ? value.sound : DEFAULT_SETTINGS.sound,
@@ -1716,6 +1732,8 @@ window.__ModuleLoader__.load({
       const [panelIndex, setPanelIndex] = React.useState(0);
       const sessionRef = React.useRef(null);
       const refreshRef = React.useRef(() => {});
+      const wasRunningRef = React.useRef(false);
+      const [retired, setRetired] = React.useState(false);
       const running = statusRunning || hostRunning;
 
       React.useEffect(() => {
@@ -1725,6 +1743,8 @@ window.__ModuleLoader__.load({
           sessionRef.current = sessionId;
           setChanges(null);
           setPanelOpen(false);
+          setRetired(false);
+          wasRunningRef.current = false;
         }
         let cancelled = false;
         const load = async () => {
@@ -1754,6 +1774,26 @@ window.__ModuleLoader__.load({
           window.clearInterval(timer);
         };
       }, [enabled, sessionId, running]);
+
+      // After a turn settles the badge stays for the configured delay, then hides.
+      React.useEffect(() => {
+        if (!enabled) {
+          wasRunningRef.current = false;
+          setRetired(false);
+          return undefined;
+        }
+        if (running) {
+          wasRunningRef.current = true;
+          setRetired(false);
+          return undefined;
+        }
+        if (!wasRunningRef.current) return undefined;
+        wasRunningRef.current = false;
+        const seconds = Number.isFinite(settings.diffAfterTurnSeconds) ? settings.diffAfterTurnSeconds : 0;
+        if (seconds <= 0) return undefined;
+        const timer = window.setTimeout(() => setRetired(true), seconds * 1000);
+        return () => window.clearTimeout(timer);
+      }, [enabled, running, settings.diffAfterTurnSeconds]);
 
       // Immediate refresh on the session's own events: a tool result is the
       // moment a file changed, so the badge lands before the next poll would.
@@ -1802,7 +1842,7 @@ window.__ModuleLoader__.load({
         return () => document.removeEventListener('keydown', onKey);
       }, [panelOpen]);
 
-      if (!enabled || changes === null) return null;
+      if (!enabled || retired || changes === null) return null;
       const added = Number.isFinite(changes.added) ? changes.added : 0;
       const deleted = Number.isFinite(changes.deleted) ? changes.deleted : 0;
       const total = Number.isFinite(changes.total) ? changes.total : 0;
@@ -2972,6 +3012,31 @@ window.__ModuleLoader__.load({
             onChange: (event) => updateSettings({ diffBadge: event.target.checked }),
           }),
         ),
+        settings.diffBadge
+          ? settingRow(
+              'diffLinger',
+              t('settings.diffLinger.title'),
+              t('settings.diffLinger.desc'),
+              h(
+                'select',
+                {
+                  className: 'dsh-tct-select',
+                  value: String(settings.diffAfterTurnSeconds),
+                  'aria-label': t('settings.diffLinger.title'),
+                  onChange: (event) => updateSettings({ diffAfterTurnSeconds: Number(event.target.value) }),
+                },
+                DIFF_LINGER_OPTIONS.map((seconds) =>
+                  h(
+                    'option',
+                    { key: String(seconds), value: String(seconds) },
+                    seconds === 0
+                      ? t('settings.diffLinger.keep')
+                      : `${seconds} ${t('settings.diffLinger.seconds')}`,
+                  ),
+                ),
+              ),
+            )
+          : null,
         settingRow(
           'annotations',
           t('settings.annotations.title'),
