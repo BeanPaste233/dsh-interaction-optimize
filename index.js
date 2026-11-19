@@ -705,6 +705,152 @@ async function codexCatalogTitle(id) {
   }
 }
 
+const CODEX_SERVER_TIMEOUT = 20000;
+/** Serialized so two calls never race their own app-server processes. */
+let codexServerQueue = Promise.resolve();
+let codexExecutablePromise;
+
+/** The codex.exe that ships with the desktop app, or one installed on PATH. */
+function codexExecutable() {
+  if (codexExecutablePromise === undefined) codexExecutablePromise = discoverCodexExecutable();
+  return codexExecutablePromise;
+}
+
+async function discoverCodexExecutable() {
+  const candidates = [];
+  const local = process.env.LOCALAPPDATA;
+  if (typeof local === 'string' && local !== '') candidates.push(join(local, 'Microsoft', 'WindowsApps', 'codex.exe'));
+  for (const part of String(process.env.PATH ?? '').split(';')) {
+    if (part === '') continue;
+    candidates.push(join(part, 'codex.exe'), join(part, 'codex.cmd'), join(part, 'codex'));
+  }
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  if (process.platform !== 'win32') return 'codex';
+  try {
+    const root = await new Promise((resolve) => {
+      const done = (error, stdout) => resolve(error === null ? String(stdout).trim().split(/\r?\n/)[0] : '');
+      execFile('powershell.exe', ['-NoProfile', '-Command', '(Get-AppxPackage OpenAI.Codex).InstallLocation'], { encoding: 'utf8', timeout: 10000, windowsHide: true }, done);
+    });
+    if (root !== '') {
+      const executable = join(root, 'app', 'resources', 'codex.exe');
+      if (existsSync(executable)) return executable;
+    }
+  } catch {
+    // No PowerShell or no Codex package: the local files still cover the call.
+  }
+  return undefined;
+}
+
+/** One thread as the app server reports it, or undefined when the server cannot. */
+function readCodexThreadFromServer(id) {
+  const run = async () => {
+    const executable = await codexExecutable();
+    if (executable === undefined) return undefined;
+    return await new Promise((resolve) => {
+      let settled = false;
+      let timer;
+      const child = spawn(executable, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      const pending = new Map();
+      let buffer = '';
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        for (const done of pending.values()) done(undefined);
+        pending.clear();
+        try {
+          child.kill();
+        } catch {
+          // The process may already be gone.
+        }
+        resolve(value);
+      };
+      const send = (message) => {
+        try {
+          child.stdin.write(JSON.stringify(message) + '\n');
+        } catch {
+          finish(undefined);
+        }
+      };
+      const request = (requestId, method, params) => new Promise((done) => {
+        pending.set(requestId, done);
+        send({ id: requestId, method, params });
+      });
+      timer = setTimeout(() => finish(undefined), CODEX_SERVER_TIMEOUT);
+      child.on('error', () => finish(undefined));
+      child.stderr.resume();
+      child.stdout.on('data', (chunk) => {
+        buffer += String(chunk);
+        let index;
+        while ((index = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, index).trim();
+          buffer = buffer.slice(index + 1);
+          if (line === '') continue;
+          let message;
+          try {
+            message = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          const done = message.id === undefined ? undefined : pending.get(message.id);
+          if (done !== undefined) {
+            pending.delete(message.id);
+            done(message);
+          }
+        }
+      });
+      void (async () => {
+        const initialized = await request(1, 'initialize', {
+          clientInfo: { name: 'dsh-interaction-optimize', title: 'DeepSeek Harness', version: '0.0.0' },
+        });
+        if (initialized === undefined || initialized.error !== undefined) {
+          finish(undefined);
+          return;
+        }
+        const read = await request(2, 'thread/read', { threadId: id, includeTurns: true });
+        if (read === undefined || read.error !== undefined || read.result === undefined || read.result.thread === undefined) {
+          finish(undefined);
+          return;
+        }
+        finish(threadFromServer(read.result.thread));
+      })();
+    });
+  };
+  const next = codexServerQueue.then(run, run);
+  codexServerQueue = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+/** Project one app-server thread onto the fields the tool reports. */
+function threadFromServer(thread) {
+  const messages = [];
+  for (const turn of Array.isArray(thread.turns) ? thread.turns : []) {
+    for (const item of Array.isArray(turn.items) ? turn.items : []) {
+      if (item === null || typeof item !== 'object') continue;
+      if (item.type === 'userMessage') {
+        const text = (Array.isArray(item.content) ? item.content : [])
+          .filter((part) => part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
+          .map((part) => part.text)
+          .join('\n')
+          .trim();
+        if (text !== '') messages.push({ role: 'user', text });
+      } else if (item.type === 'agentMessage') {
+        const text = typeof item.text === 'string' ? item.text.trim() : '';
+        if (text !== '') messages.push({ role: 'assistant', text });
+      }
+    }
+  }
+  return {
+    ...(typeof thread.name === 'string' && thread.name !== '' ? { title: thread.name } : {}),
+    ...(typeof thread.cwd === 'string' && thread.cwd !== '' ? { cwd: thread.cwd } : {}),
+    ...(typeof thread.createdAt === 'number' ? { createdAt: new Date(thread.createdAt * 1000).toISOString() } : {}),
+    messages,
+  };
+}
+
+
 /** Title, working directory and creation time for one thread, if it is local. */
 async function codexThreadInfo(id) {
   const catalog = await codexCatalogTitle(id);
@@ -734,15 +880,21 @@ async function codexThreadInfo(id) {
 async function codexThreadValue(input, maxMessages) {
   const id = codexThreadId(input);
   if (id === undefined) return { ok: false, reason: 'invalid-link' };
-  const info = await codexThreadInfo(id);
-  if (info.ok !== true) return { ok: false, id, reason: info.reason };
-  const file = codexThreadFile(id);
-  if (file === undefined) return { ok: false, id, reason: 'not-found' };
-  let thread;
-  try {
-    thread = readCodexThread(file);
-  } catch {
-    return { ok: false, id, reason: 'unreadable' };
+  // The app server is the official reader; a local rollout covers what it cannot serve.
+  let thread = await readCodexThreadFromServer(id);
+  let info;
+  if (thread === undefined) {
+    info = await codexThreadInfo(id);
+    if (info.ok !== true) return { ok: false, id, reason: info.reason };
+    const file = codexThreadFile(id);
+    if (file === undefined) return { ok: false, id, reason: 'not-found' };
+    try {
+      thread = readCodexThread(file);
+    } catch {
+      return { ok: false, id, reason: 'unreadable' };
+    }
+  } else {
+    info = { ok: true, id };
   }
   const limit = Number.isFinite(maxMessages)
     ? Math.min(CODEX_MAX_MESSAGES, Math.max(1, Math.trunc(maxMessages)))
@@ -758,12 +910,15 @@ async function codexThreadValue(input, maxMessages) {
     messages[0] = { role: messages[0].role, text: messages[0].text.slice(-CODEX_MAX_CHARS) };
     truncated = true;
   }
+  const title = thread.title === undefined ? info.title : thread.title;
+  const cwd = thread.cwd === undefined ? info.cwd : thread.cwd;
+  const createdAt = thread.createdAt === undefined ? info.createdAt : thread.createdAt;
   return {
     ok: true,
     id,
-    ...(info.title === undefined ? {} : { title: info.title }),
-    ...(info.cwd === undefined ? {} : { cwd: info.cwd }),
-    ...(info.createdAt === undefined ? {} : { createdAt: info.createdAt }),
+    ...(title === undefined ? {} : { title }),
+    ...(cwd === undefined ? {} : { cwd }),
+    ...(createdAt === undefined ? {} : { createdAt }),
     messages,
     truncated,
   };

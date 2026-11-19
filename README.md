@@ -93,7 +93,8 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 ## Codex 深链
 
 - 消息里出现 `codex://threads/<id>` 时，模型可以调用 `codex_thread` 工具读取**本机** Codex 的该线程：工作目录、创建时间，以及最近的用户/助手消息。
-- 数据来自 `~/.codex/sessions/…/rollout-<时间>-<id>.jsonl`（部分为 `.jsonl.zst`，自动解压）；只投影用户与助手正文，不包含 reasoning、工具调用与开发者上下文。
+- 数据优先走 **Codex 官方 app-server**：启动 `codex app-server`，用 JSON-RPC `initialize` + `thread/read` 读取线程（标题、目录、创建时间、全部条目），只投影用户与助手正文，不包含 reasoning、工具调用与开发者上下文。
+- app-server 不可用时回退到本机 rollout 文件 `~/.codex/sessions/…/rollout-<时间>-<id>.jsonl`（`.jsonl.zst` 自动解压），所以没装 Codex 桌面版但留有会话文件时仍可读。
 - 单次最多 20 条消息（可传 `max_messages` 到 50）、8000 字符；超出会截断并标记 `truncated`。
 - 本机找不到时（例如链接来自另一台设备）返回 `ok:false, reason:not-found`；模型会直接说明「本机没有这个线程」，不会声称能打开 Codex。
 - 输入框里出现链接时，输入框上方会出现 chip：`Codex 线程 · <标题> · <工作目录>`，标题来自 Codex 本地目录库 `~/.codex/sqlite/codex.db` 的 `local_thread_catalog.display_title`（读不到时回退到该线程第一条用户消息）；本机没有的线程显示「本机没有这个线程」。
@@ -107,7 +108,8 @@ DeepSeek Harness Web UI 插件（原名 `codex-like`）：把 Codex 那种「本
 | 点击胶囊 | 实时（回合进行中）：`ctx.get('sidebarRight').openTab('dsh-interaction-optimize-live')`，该标签类型注册在 `ctx.sidebarRightTabs`、正文注册在 `sidebar.right.pane.tab`（key 为 `dsh-interaction-optimize/live-changes`）；没有右侧栏时退回内联 `LiveDiffPanel`。回合结束后：`openResource('dsh-resource://changes-review/session/<session>/<seq>/<turn>')`。 |
 | 数据来源 | Host 监听 `session/event`：`turn/start` 时留 git 基线（`git stash create` → 回退 HEAD，另记未跟踪文件集），`workspace/changes` 时缓存 `ctx.get('workspaceChanges').summary()`；实时 summary 用 `git diff --numstat -z` 现算并缓存 450 ms。 |
 | Codex 深链 | `ctx.tools.register()` 注册 `codex_thread`（工具定义手写 JSON Schema，不导入官方包）；`ctx.systemPrompt.section()` 注册策略段，提示模型看到链接先读线程。 |
-| 线程读取 | 由 UUIDv7 前缀推出日期目录定位 rollout 文件，必要时递归扫描；`.jsonl.zst` 用 `zlib.zstdDecompressSync` 解压，解析 `session_meta` 与 `response_item:message`。 |
+| 线程读取 | 官方协议：发现 `codex.exe`（WindowsApps 执行别名 / PATH / `Get-AppxPackage`）后，`spawn` 一个 `codex app-server`，串行发送 `initialize` 与 `thread/read`（20 秒超时），读取后立即结束进程。 |
+| 离线回退 | app-server 不可用时，由 UUIDv7 前缀推出日期目录定位 rollout 文件，必要时递归扫描；`.jsonl.zst` 用 `zlib.zstdDecompressSync` 解压，解析 `session_meta` 与 `response_item:message`。 |
 | 链接提示 | `GET /codex-info?id=…` 返回标题/目录/创建时间（`local_thread_catalog` 优先，rollout 兜底）；`CodexLinkDock` 读草稿里的首个链接并展示 chip，`installCodexLinkStyler` 用 DOM 遍历把消息里的链接染蓝。 |
 | 访问控制 | 每个路由先调用 `ctx.get('connection').requestRejection(req)`，Host/Origin 不符或无有效浏览器会话时直接返回 401/403，和 DSH 自身路由一致。 |
 | Host 路由 | `/dsh-interaction-optimize` 前缀：`GET/PUT/DELETE /sound`、`GET /changes?session=…`、`GET /live-diff?session=…&path=…`、`POST /open`、`GET /apps?path=…`。 |
