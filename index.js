@@ -1272,6 +1272,15 @@ async function handleOpen(req, res, cwdBySession, ctx) {
     sendJson(res, launched ? 200 : 500, launched ? { ok: true, path } : { error: 'application launch failed' });
     return;
   }
+  // A directory's "default application" is the file manager: ask Explorer to
+  // show the folder instead of requesting a file association, which the shell
+  // may answer with nothing for a path that is not a file.
+  if (isDirectory && action === 'open' && applicationExe === undefined) {
+    const opened = await revealPath(path, true);
+    logOpen({ action, path, isDirectory, opened });
+    sendJson(res, opened ? 200 : 500, opened ? { ok: true, path } : { error: 'file manager launch failed' });
+    return;
+  }
   if (action !== 'pick') {
     const native = await nativeOpen(ctx, path, action, applicationExe);
     logOpen({ action, path, native, application });
