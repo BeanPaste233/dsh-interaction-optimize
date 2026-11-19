@@ -125,6 +125,7 @@ window.__ModuleLoader__.load({
       'settings.system.permission.enable': '启用系统通知',
       'settings.diffBadge.title': '输入框上方增删统计',
       'settings.diffBadge.desc': '在输入框上方显示本轮代码改动的新增/删除行数与文件数，点击可在右侧栏查看 diff。',
+      'settings.nav': '交互优化',
       'settings.diffLinger.title': '回合结束后停留时间',
       'settings.diffLinger.desc': '增删统计在本轮结束后继续显示多久；选「一直显示」则保留到下一轮开始。',
       'settings.diffLinger.keep': '一直显示',
@@ -216,6 +217,7 @@ window.__ModuleLoader__.load({
       'settings.system.permission.enable': 'Allow system notifications',
       'settings.diffBadge.title': 'Diff badge above the composer',
       'settings.diffBadge.desc': 'Show this turn\'s added/deleted line counts and changed file count above the input box; click it to read the diff in the right Sidebar.',
+      'settings.nav': 'Interaction optimize',
       'settings.diffLinger.title': 'How long the diff badge stays',
       'settings.diffLinger.desc': 'How long the diff badge remains after a turn ends; "Keep showing" holds it until the next turn starts.',
       'settings.diffLinger.keep': 'Keep showing',
@@ -2839,6 +2841,36 @@ window.__ModuleLoader__.load({
     // Configuration page (plugins.row.config).
     // ------------------------------------------------------------------
 
+    /** Settings navigation glyph: a pair of sparkles. */
+    function InteractionSettingsIcon(props) {
+      const size = Number.isFinite(props.size) ? props.size : 16;
+      const active = props.active === true;
+      const fill = active ? 'currentColor' : 'none';
+      const fillOpacity = active ? 0.18 : undefined;
+      return h(
+        'svg',
+        { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+        h('path', {
+          key: 'big',
+          d: 'M6.5 2.5 7.6 5.6 10.7 6.7 7.6 7.8 6.5 10.9 5.4 7.8 2.3 6.7 5.4 5.6z',
+          stroke: 'currentColor',
+          strokeWidth: 1.1,
+          strokeLinejoin: 'round',
+          fill,
+          fillOpacity,
+        }),
+        h('path', {
+          key: 'small',
+          d: 'M11.6 9.4 12.2 11 13.8 11.6 12.2 12.2 11.6 13.8 11 12.2 9.4 11.6 11 11z',
+          stroke: 'currentColor',
+          strokeWidth: 1,
+          strokeLinejoin: 'round',
+          fill,
+          fillOpacity,
+        }),
+      );
+    }
+
     function TurnCompleteToastSettings(props) {
       const t = typeof props.t === 'function' ? props.t : (key) => key;
       const settings = React.useSyncExternalStore(subscribeSettings, getSettings);
@@ -3301,6 +3333,29 @@ window.__ModuleLoader__.load({
               locale: NS,
             },
             TurnCompleteToastSettings,
+          ),
+        );
+
+        // First-class Settings navigation entry, so the options are reachable
+        // without opening the plugin row.
+        const settingsT = ctx.locale.bind(NS);
+        ctx.slots.inject('settings.section', () =>
+          ctx.slots.register(
+            {
+              name: 'settings.section',
+              id: `${NS}-settings`,
+              order: 500,
+              label: () => settingsT('settings.nav'),
+              locale: NS,
+              inject: () => ({ t: settingsT }),
+            },
+            TurnCompleteToastSettings,
+          ),
+        );
+        ctx.slots.inject('settings.section.icon', () =>
+          ctx.slots.register(
+            { name: 'settings.section.icon', id: `${NS}-settings` },
+            InteractionSettingsIcon,
           ),
         );
 
