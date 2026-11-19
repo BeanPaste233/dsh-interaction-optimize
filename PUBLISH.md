@@ -4,7 +4,7 @@
 
 当前准备状态（`npm pack --dry-run` 已通过）：
 
-- 包名 `dsh-interaction-optimize`，版本 `2.5.4`，npm 上仍可用（未占用）
+- 包名 `dsh-interaction-optimize`，版本 `2.5.5`，npm 上仍可用（未占用）
 - 发布内容 9 个文件、约 35 kB：
   `index.js`、`client.js`、`cordis.patch.yml`、`locale/{en,zh}.json`、`icon.svg`、`README.md`、`LICENSE`、`package.json`
 - 没有 `postinstall`、没有构建产物、没有第三方运行时依赖
